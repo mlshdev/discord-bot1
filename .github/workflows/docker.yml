@@ -112,7 +112,9 @@ jobs:
             exit 1
           fi
 
-          "${hardened[@]}" discord-bot1:validate ffmpeg -hide_banner -encoders | grep -q libopus
+          # Captured first: `grep -q` exits early and the docker CLI's EPIPE would trip pipefail.
+          encoders="$("${hardened[@]}" discord-bot1:validate ffmpeg -hide_banner -encoders)"
+          grep -q libopus <<<"${encoders}"
 
           # yt-dlp must detect Deno and the bundled EJS solver (an unreachable URL keeps this offline).
           debug="$("${hardened[@]}" discord-bot1:validate yt-dlp -v --no-js-runtimes --js-runtimes deno \
