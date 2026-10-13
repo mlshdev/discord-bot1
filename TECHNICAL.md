@@ -105,7 +105,7 @@ Image size is about 1.2 GB. Debian's `ffmpeg` and its libraries account for roug
 | Workflow | Trigger | What it does |
 |---|---|---|
 | `ci.yml` | push to `main`, PRs | On `ubuntu-slim`: `biome ci`, `tsc`, `node --test` |
-| `docker.yml` | push or PR touching image inputs; Mon/Thu 03:00 UTC; `workflow_dispatch` | Native matrix (`ubuntu-26.04-arm` → `linux/arm64`, `ubuntu-26.04` → `linux/amd64`), no QEMU. Each arch builds with `--load` and is validated in a hardened container: yt-dlp version matches the pin, ffmpeg has libopus, yt-dlp detects Deno and the bundled EJS solver, Deno runs under the hardened settings, discord.js/voice/davey import, and a missing config exits 78. On `main` it then pushes by digest. A merge job builds the manifest list tagged `latest`, `ytdlp-<ver>` and `sha-<sha>`. Scheduled runs use `no-cache` and `pull` for a clean rebuild. |
+| `docker.yml` | every PR; push to `main` touching image inputs; Mon/Thu 03:00 UTC; `workflow_dispatch` | Native matrix (`ubuntu-26.04-arm` → `linux/arm64`, `ubuntu-26.04` → `linux/amd64`), no QEMU. Each arch builds with `--load` and is validated in a hardened container: yt-dlp version matches the pin, ffmpeg has libopus, yt-dlp detects Deno and the bundled EJS solver, Deno runs under the hardened settings, discord.js/voice/davey import, and a missing config exits 78. On `main` it then pushes by digest. A merge job builds the manifest list tagged `latest`, `ytdlp-<ver>` and `sha-<sha>`. Scheduled runs use `no-cache` and `pull` for a clean rebuild. |
 | `ytdlp-release.yml` | every 30 min; `workflow_dispatch` | Polls `yt-dlp/yt-dlp` for its latest release. When the release is new and its Linux assets plus `SHA2-256SUMS` are uploaded, it rewrites `ARG YT_DLP_VERSION` in the `Dockerfile`, commits to `main`, and dispatches `docker.yml`. |
 | `dependabot-automerge.yml` | Dependabot PRs | Turns on auto-merge, which waits for the required checks |
 
@@ -119,7 +119,7 @@ Image size is about 1.2 GB. Debian's `ffmpeg` and its libraries account for roug
 ### Repository requirements
 
 - **Settings → Actions → General → Workflow permissions** must allow read/write, so the watcher can push and GHCR packages can be published.
-- If `main` is protected, allow `github-actions[bot]` to bypass the rules, or the watcher's push is rejected.
+- `main` is protected by the `main` ruleset. It requires `check`, `build (linux/arm64)` and `build (linux/amd64)` to pass, which is what Dependabot auto-merge waits for. The GitHub Actions app (so the yt-dlp watcher can push) and repository admins can bypass it.
 - The image path comes from `github.repository`, lowercased. `compose.yml` assumes `mlshdev/discord-bot1`, so update it if the repository lives elsewhere.
 - Deployments track `:latest` (`pull_policy: always`), so a new build reaches the server on its next `docker compose up -d`.
 

@@ -10,14 +10,8 @@ on:
       - "bun.lock"
       - "src/**"
       - ".github/workflows/docker.yml"
+  # Unfiltered so the per-arch builds can be required status checks on every PR.
   pull_request:
-    paths:
-      - "Dockerfile"
-      - ".dockerignore"
-      - "package.json"
-      - "bun.lock"
-      - "src/**"
-      - ".github/workflows/docker.yml"
   schedule:
     # Twice-weekly clean rebuild so Debian/ffmpeg/Node patch releases land without a manifest change.
     - cron: "0 3 * * 1,4"
