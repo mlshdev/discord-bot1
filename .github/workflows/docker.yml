@@ -1,0 +1,236 @@
+name: Docker
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "Dockerfile"
+      - ".dockerignore"
+      - "package.json"
+      - "bun.lock"
+      - "src/**"
+      - ".github/workflows/docker.yml"
+  pull_request:
+    paths:
+      - "Dockerfile"
+      - ".dockerignore"
+      - "package.json"
+      - "bun.lock"
+      - "src/**"
+      - ".github/workflows/docker.yml"
+  schedule:
+    # Twice-weekly clean rebuild so Debian/ffmpeg/Node patch releases land without a manifest change.
+    - cron: "0 3 * * 1,4"
+  # Dispatched by ytdlp-release.yml after it bumps YT_DLP_VERSION.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docker-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  meta:
+    runs-on: ubuntu-slim
+    timeout-minutes: 5
+    outputs:
+      image: ${{ steps.vars.outputs.image }}
+      ytdlp: ${{ steps.vars.outputs.ytdlp }}
+      publish: ${{ steps.vars.outputs.publish }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - id: vars
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          version="$(sed -n 's/^ARG YT_DLP_VERSION=//p' Dockerfile | head -n 1)"
+          if [[ ! "${version}" =~ ^[0-9]{4}\.[0-9]{2}\.[0-9]{2}(\.[0-9]+)?$ ]]; then
+            echo "::error file=Dockerfile::Unexpected YT_DLP_VERSION '${version}'"
+            exit 1
+          fi
+          publish=false
+          if [[ "${EVENT_NAME}" != "pull_request" && "${REF}" == "refs/heads/main" ]]; then
+            publish=true
+          fi
+          {
+            echo "ytdlp=${version}"
+            echo "image=ghcr.io/${GITHUB_REPOSITORY,,}"
+            echo "publish=${publish}"
+          } >> "${GITHUB_OUTPUT}"
+
+  build:
+    name: build (${{ matrix.platform }})
+    needs: meta
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: ubuntu-26.04-arm, platform: linux/arm64, arch: arm64 }
+          - { runner: ubuntu-26.04, platform: linux/amd64, arch: amd64 }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE: ${{ needs.meta.outputs.image }}
+      YTDLP_VERSION: ${{ needs.meta.outputs.ytdlp }}
+      PUBLISH: ${{ needs.meta.outputs.publish }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: docker/setup-buildx-action@v4
+
+      - id: labels
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.IMAGE }}
+          labels: |
+            io.github.yt-dlp.version=${{ env.YTDLP_VERSION }}
+
+      - name: Build for validation
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          load: true
+          pull: true
+          no-cache: ${{ github.event_name == 'schedule' }}
+          tags: discord-bot1:validate
+          labels: ${{ steps.labels.outputs.labels }}
+          cache-from: type=gha,scope=${{ matrix.arch }}
+          cache-to: type=gha,scope=${{ matrix.arch }},mode=max
+
+      - name: Validate image
+        run: |
+          set -euo pipefail
+          hardened=(docker run --rm --read-only --cap-drop ALL
+            --security-opt no-new-privileges:true
+            --tmpfs "/tmp:rw,nosuid,nodev,mode=1777" --user 1000:1000)
+
+          actual="$("${hardened[@]}" discord-bot1:validate yt-dlp --version)"
+          if [[ "${actual}" != "${YTDLP_VERSION}" ]]; then
+            echo "::error::yt-dlp reports '${actual}', expected '${YTDLP_VERSION}'"
+            exit 1
+          fi
+
+          "${hardened[@]}" discord-bot1:validate ffmpeg -hide_banner -encoders | grep -q libopus
+
+          # yt-dlp must detect Deno and the bundled EJS solver (an unreachable URL keeps this offline).
+          debug="$("${hardened[@]}" discord-bot1:validate yt-dlp -v --no-js-runtimes --js-runtimes deno \
+            --simulate "https://example.invalid/" 2>&1 || true)"
+          grep -Eq '^\[debug\] JS runtimes: .*deno-' <<<"${debug}"
+          grep -q 'yt_dlp_ejs-' <<<"${debug}"
+          echo 'console.log("deno ok")' | docker run --rm -i --read-only --cap-drop ALL \
+            --security-opt no-new-privileges:true --tmpfs "/tmp:rw,nosuid,nodev,mode=1777" \
+            --user 1000:1000 discord-bot1:validate deno run --ext=js --no-prompt --no-remote --no-config --no-npm -
+
+          "${hardened[@]}" --workdir /app discord-bot1:validate node --input-type=module -e \
+            "await import('discord.js'); const v = await import('@discordjs/voice'); console.log(v.generateDependencyReport());"
+
+          # No configuration must fail fast with EX_CONFIG, proving the entrypoint loads.
+          set +e
+          "${hardened[@]}" discord-bot1:validate
+          code=$?
+          set -e
+          if [[ "${code}" -ne 78 ]]; then
+            echo "::error::Entrypoint exited with ${code}, expected 78"
+            exit 1
+          fi
+
+      - name: Log in to GHCR
+        if: env.PUBLISH == 'true'
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push by digest
+        id: push
+        if: env.PUBLISH == 'true'
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          labels: ${{ steps.labels.outputs.labels }}
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=${{ matrix.arch }}
+
+      - name: Export digest
+        if: env.PUBLISH == 'true'
+        env:
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/digests"
+          touch "${RUNNER_TEMP}/digests/${DIGEST#sha256:}"
+
+      - uses: actions/upload-artifact@v7
+        if: env.PUBLISH == 'true'
+        with:
+          name: digests-${{ matrix.arch }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    needs: [meta, build]
+    if: needs.meta.outputs.publish == 'true'
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE: ${{ needs.meta.outputs.image }}
+      YTDLP_VERSION: ${{ needs.meta.outputs.ytdlp }}
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: digests-*
+          merge-multiple: true
+
+      - uses: docker/setup-buildx-action@v4
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=raw,value=latest
+            type=raw,value=ytdlp-${{ env.YTDLP_VERSION }}
+            type=sha,format=long
+
+      - name: Create multi-arch manifest list
+        working-directory: ${{ runner.temp }}/digests
+        run: |
+          set -euo pipefail
+          tag_args=()
+          while IFS= read -r tag; do
+            tag_args+=(-t "${tag}")
+          done < <(jq -r '.tags[]' <<<"${DOCKER_METADATA_OUTPUT_JSON}")
+          sources=()
+          for digest in *; do
+            sources+=("${IMAGE}@sha256:${digest}")
+          done
+          if [[ "${#sources[@]}" -ne 2 ]]; then
+            echo "::error::Expected 2 per-arch digests, got ${#sources[@]}"
+            exit 1
+          fi
+          docker buildx imagetools create "${tag_args[@]}" "${sources[@]}"
+
+      - name: Inspect
+        run: docker buildx imagetools inspect "${IMAGE}:ytdlp-${YTDLP_VERSION}"

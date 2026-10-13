@@ -1,0 +1,35 @@
+name: "discord-bot1"
+
+services:
+  discord-bot1:
+    # Rolling tag rebuilt on every upstream yt-dlp release; always pulled on `up`.
+    image: "ghcr.io/mlshdev/discord-bot1:latest"
+    pull_policy: always
+    command: ["node", "src/index.ts"]
+    user: "1000:1000"
+    init: true
+    read_only: true
+    tmpfs:
+      - "/tmp:rw,nosuid,nodev,mode=1777"
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    restart: unless-stopped
+    env_file:
+      - path: ".env"
+        required: true
+    volumes:
+      - "./discord-bot1/config:/config:ro"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+    healthcheck:
+      test:
+        - "CMD"
+        - "node"
+        - "-e"
+        - "fetch(`http://127.0.0.1:$${process.env.HEALTH_PORT}/healthz`).then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s

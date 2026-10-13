@@ -1,0 +1,29 @@
+{
+  "name": "discord-bot1",
+  "version": "1.0.0",
+  "private": true,
+  "description": "YouTube-only Discord music bot backed by yt-dlp",
+  "type": "module",
+  "engines": {
+    "node": ">=26"
+  },
+  "scripts": {
+    "start": "node src/index.ts",
+    "dev": "node --watch --env-file=.env src/index.ts",
+    "typecheck": "tsc",
+    "lint": "biome check .",
+    "format": "biome check --write .",
+    "test": "node --test test/*.test.ts",
+    "check": "biome check . && tsc && node --test test/*.test.ts"
+  },
+  "dependencies": {
+    "@discordjs/voice": "^0.19.2",
+    "discord.js": "^14.27.0"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.15",
+    "@types/node": "26.6.5",
+    "typescript": "7.0.2"
+  },
+  "packageManager": "bun@1.4.3"
+}
