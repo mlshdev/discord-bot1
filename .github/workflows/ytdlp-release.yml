@@ -7,8 +7,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
-  actions: write
+  contents: read
 
 concurrency:
   group: ytdlp-release-watch
@@ -19,9 +18,11 @@ jobs:
     runs-on: ubuntu-slim
     timeout-minutes: 10
     steps:
+      # Deploy key: bypasses the `main` ruleset, and unlike GITHUB_TOKEN its push triggers docker.yml.
       - uses: actions/checkout@v7
         with:
           ref: main
+          ssh-key: ${{ secrets.YTDLP_BUMP_DEPLOY_KEY }}
 
       - id: versions
         env:
@@ -72,10 +73,3 @@ jobs:
           git add Dockerfile
           git commit -m "deps(yt-dlp): bump from ${CURRENT} to ${LATEST}"
           git push origin HEAD:main
-
-      # Pushes made with GITHUB_TOKEN do not trigger workflows, so the build is dispatched explicitly.
-      - name: Trigger image build
-        if: steps.versions.outputs.ready == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh workflow run docker.yml --ref main

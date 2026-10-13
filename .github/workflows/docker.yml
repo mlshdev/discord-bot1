@@ -15,7 +15,6 @@ on:
   schedule:
     # Twice-weekly clean rebuild so Debian/ffmpeg/Node patch releases land without a manifest change.
     - cron: "0 3 * * 1,4"
-  # Dispatched by ytdlp-release.yml after it bumps YT_DLP_VERSION.
   workflow_dispatch:
 
 permissions:

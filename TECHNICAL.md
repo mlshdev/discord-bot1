@@ -106,20 +106,22 @@ Image size is about 1.2 GB. Debian's `ffmpeg` and its libraries account for roug
 |---|---|---|
 | `ci.yml` | push to `main`, PRs | On `ubuntu-slim`: `biome ci`, `tsc`, `node --test` |
 | `docker.yml` | every PR; push to `main` touching image inputs; Mon/Thu 03:00 UTC; `workflow_dispatch` | Native matrix (`ubuntu-26.04-arm` → `linux/arm64`, `ubuntu-26.04` → `linux/amd64`), no QEMU. Each arch builds with `--load` and is validated in a hardened container: yt-dlp version matches the pin, ffmpeg has libopus, yt-dlp detects Deno and the bundled EJS solver, Deno runs under the hardened settings, discord.js/voice/davey import, and a missing config exits 78. On `main` it then pushes by digest. A merge job builds the manifest list tagged `latest`, `ytdlp-<ver>` and `sha-<sha>`. Scheduled runs use `no-cache` and `pull` for a clean rebuild. |
-| `ytdlp-release.yml` | every 30 min; `workflow_dispatch` | Polls `yt-dlp/yt-dlp` for its latest release. When the release is new and its Linux assets plus `SHA2-256SUMS` are uploaded, it rewrites `ARG YT_DLP_VERSION` in the `Dockerfile`, commits to `main`, and dispatches `docker.yml`. |
+| `ytdlp-release.yml` | every 30 min; `workflow_dispatch` | Polls `yt-dlp/yt-dlp` for its latest release. When the release is new and its Linux assets plus `SHA2-256SUMS` are uploaded, it rewrites `ARG YT_DLP_VERSION` in the `Dockerfile`, and pushes the commit to `main` over SSH with a write deploy key (secret `YTDLP_BUMP_DEPLOY_KEY`). That push triggers `docker.yml`. |
 | `dependabot-automerge.yml` | Dependabot PRs | Turns on auto-merge, which waits for the required checks |
 
 `.github/dependabot.yml` covers the `docker`, `github-actions` and `bun` ecosystems on Mon/Thu 00:00 UTC.
 
-### Why poll and dispatch
+### Why poll, and why a deploy key
 
 - GitHub Actions cannot subscribe to release events from a repository you don't own, so `ytdlp-release.yml` polls upstream instead.
-- Commits pushed with `GITHUB_TOKEN` do not trigger `push` workflows. That is why the watcher calls `gh workflow run docker.yml` explicitly, which needs the `actions: write` permission.
+- The watcher pushes with a deploy key, not `GITHUB_TOKEN`, for two reasons. Pushes made with `GITHUB_TOKEN` don't trigger other workflows. And on a personal account the GitHub Actions app can't be a ruleset bypass actor, while a deploy key can.
+- Dependabot PRs are auto-merged with `GITHUB_TOKEN`, so the merge doesn't trigger `docker.yml` on its own. The Mon/Thu 03:00 UTC clean rebuild runs three hours after Dependabot's 00:00 UTC check and publishes the merged updates.
 
 ### Repository requirements
 
-- **Settings → Actions → General → Workflow permissions** must allow read/write, so the watcher can push and GHCR packages can be published.
-- `main` is protected by the `main` ruleset. It requires `check`, `build (linux/arm64)` and `build (linux/amd64)` to pass, which is what Dependabot auto-merge waits for. The GitHub Actions app (so the yt-dlp watcher can push) and repository admins can bypass it.
+- **Settings → Actions → General → Workflow permissions** is set to read/write so GHCR packages can be published and Dependabot PRs auto-merged. This is already configured.
+- `main` is protected by the `main` ruleset. It blocks force-pushes and deletion, and requires `check`, `build (linux/arm64)` and `build (linux/amd64)` to pass, which is what Dependabot auto-merge waits for. Deploy keys (the yt-dlp watcher) and repository admins can bypass it.
+- To rotate the deploy key, generate a new ed25519 key pair, then run `gh repo deploy-key add --allow-write` for the public key and `gh secret set YTDLP_BUMP_DEPLOY_KEY` for the private key.
 - The image path comes from `github.repository`, lowercased. `compose.yml` assumes `mlshdev/discord-bot1`, so update it if the repository lives elsewhere.
 - Deployments track `:latest` (`pull_policy: always`), so a new build reaches the server on its next `docker compose up -d`.
 
