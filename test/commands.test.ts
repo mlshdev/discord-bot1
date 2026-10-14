@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { PRIVILEGED_COMMANDS, parseCommand } from "../src/commands.ts";
+import { PREFIX, PRIVILEGED_COMMANDS, parseCommand } from "../src/commands.ts";
 
 describe("parseCommand", () => {
   it("parses !add with its argument", () => {
@@ -15,17 +15,17 @@ describe("parseCommand", () => {
   });
 
   it("is case-insensitive and trims whitespace", () => {
-    assert.deepEqual(parseCommand("  !!FF  "), { kind: "forceSkip" });
+    assert.deepEqual(parseCommand("  !FF  "), { kind: "forceSkip" });
   });
 
   it("parses the privileged commands", () => {
-    assert.deepEqual(parseCommand("!!ff"), { kind: "forceSkip" });
-    assert.deepEqual(parseCommand("!!mn"), { kind: "manage" });
-    assert.deepEqual(parseCommand("!!won"), { kind: "disconnect" });
+    assert.deepEqual(parseCommand("!ff"), { kind: "forceSkip" });
+    assert.deepEqual(parseCommand("!mn"), { kind: "manage" });
+    assert.deepEqual(parseCommand("!won"), { kind: "disconnect" });
   });
 
   it("ignores privileged commands with trailing text", () => {
-    assert.equal(parseCommand("!!ff now"), undefined);
+    assert.equal(parseCommand("!ff now"), undefined);
   });
 
   it("ignores unknown input", () => {
@@ -33,6 +33,14 @@ describe("parseCommand", () => {
     assert.equal(parseCommand("hello"), undefined);
     assert.equal(parseCommand("!play x"), undefined);
     assert.equal(parseCommand("!addhttps://youtu.be/x"), undefined);
+    assert.equal(parseCommand("!constructor"), undefined);
+  });
+
+  it("uses the same single-character prefix for every command", () => {
+    assert.equal(PREFIX, "!");
+    assert.equal(parseCommand("!!ff"), undefined);
+    assert.equal(parseCommand("!!add https://youtu.be/dQw4w9WgXcQ"), undefined);
+    assert.equal(parseCommand("ff"), undefined);
   });
 
   it("marks only role-gated commands as privileged", () => {

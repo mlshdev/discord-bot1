@@ -6,18 +6,18 @@ Only audio is ever downloaded, never video. YouTube's Opus audio goes straight t
 
 ## Commands
 
-All commands only work in the text channel set by `TEXT_CHANNEL_ID` on the server set by `GUILD_ID`. Everything else is ignored.
+All commands only work in the text channel set by `TEXT_CHANNEL_ID` on the server set by `GUILD_ID`. Everything else is ignored. Every command uses the same `!` prefix.
 
 | Command | Who | What it does |
 |---|---|---|
 | `!add <youtube-url>` | everyone | Adds a YouTube video to the queue. If nothing is playing, playback starts in `VOICE_CHANNEL_ID`. |
-| `!!ff` | `DJ_ROLE_ID` only | Force-skips the current song. |
-| `!!mn` | `DJ_ROLE_ID` only | Opens the interactive queue manager. |
-| `!!won` | `DJ_ROLE_ID` only | Stops playback, clears the queue and leaves the voice channel. |
+| `!ff` | `DJ_ROLE_ID` only | Force-skips the current song. |
+| `!mn` | `DJ_ROLE_ID` only | Opens the interactive queue manager. |
+| `!won` | `DJ_ROLE_ID` only | Stops playback, clears the queue and leaves the voice channel. |
 
 Accepted links: `youtube.com/watch?v=…`, `youtu.be/…`, `music.youtube.com/watch?v=…`, `/shorts/…`, `/live/…` (finished streams only), `/embed/…`. Playlist parameters are ignored and only the linked video is added. Live streams, premieres and non-YouTube links are rejected.
 
-### Queue manager (`!!mn`)
+### Queue manager (`!mn`)
 
 The menu shows what is playing now and the queue, ten tracks per page. It updates itself whenever the queue changes.
 
@@ -56,7 +56,7 @@ This walks through everything from an empty Discord account to a bot playing mus
    |---|---|
    | View Channels | See the command channel and the voice channel |
    | Send Messages | Answer commands and announce tracks |
-   | Embed Links | Draw the `!!mn` queue manager |
+   | Embed Links | Draw the `!mn` queue manager |
    | Read Message History | Answer commands as replies. Discord requires this to reply to a message. |
    | Connect | Join the voice channel |
    | Speak | Play audio |
@@ -122,7 +122,7 @@ The image `ghcr.io/mlshdev/discord-bot1:latest` is public, so you don't need to 
 1. `docker compose ps` shows the container as `healthy` within about 30 seconds.
 2. `docker compose logs discord-bot1` contains a `"message":"bot ready"` line with your server and channel names, and the bot shows as online in Discord.
 3. In the command channel, send `!add https://www.youtube.com/watch?v=dQw4w9WgXcQ`. The bot replies `➕ Added …, starting playback.`, joins the voice channel and plays.
-4. As a member with the DJ role, send `!!mn` to open the queue manager, and `!!won` to stop.
+4. As a member with the DJ role, send `!mn` to open the queue manager, and `!won` to stop.
 
 ### Troubleshooting
 
@@ -151,7 +151,7 @@ All settings come from `.env`. `.env.example` is the template.
 | `GUILD_ID` | yes | — | The only server the bot responds in |
 | `TEXT_CHANNEL_ID` | yes | — | The only channel commands are read from. A voice channel's built-in chat also works. |
 | `VOICE_CHANNEL_ID` | yes | — | The voice channel the bot plays in |
-| `DJ_ROLE_ID` | yes | — | Role allowed to use `!!ff`, `!!mn` and `!!won` |
+| `DJ_ROLE_ID` | yes | — | Role allowed to use `!ff`, `!mn` and `!won` |
 | `MAX_QUEUE_SIZE` | no | `100` | Maximum number of queued tracks (1–1000) |
 | `IDLE_DISCONNECT_SECONDS` | no | `300` | How long the bot stays in voice with an empty queue before leaving. `0` means never leave. |
 | `AUDIO_BITRATE_KBPS` | no | `128` | Opus bitrate (16–510). Only used in the rare case a video has no Opus audio and has to be re-encoded. Opus audio is passed through at its original quality. |
