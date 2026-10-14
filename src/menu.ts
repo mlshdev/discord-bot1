@@ -3,10 +3,10 @@ import {
   ButtonBuilder,
   type ButtonInteraction,
   ButtonStyle,
+  type ChatInputCommandInteraction,
   ComponentType,
   EmbedBuilder,
   escapeMarkdown,
-  type Message,
   MessageFlags,
   StringSelectMenuBuilder,
   type StringSelectMenuInteraction,
@@ -18,6 +18,8 @@ import type { MusicPlayer, PlayerSnapshot } from "./player.ts";
 
 export const PAGE_SIZE = 10;
 const MENU_IDLE_MS = 5 * 60_000;
+// The /mn interaction token, used to edit the menu, expires after 15 minutes.
+const MENU_LIFETIME_MS = 14 * 60_000;
 const REFRESH_DEBOUNCE_MS = 1_000;
 
 export const MenuAction = {
@@ -247,7 +249,10 @@ function applyAction(
   }
 }
 
-export async function openMenu(message: Message<true>, context: MenuContext): Promise<void> {
+export async function openMenu(
+  command: ChatInputCommandInteraction<"cached">,
+  context: MenuContext,
+): Promise<void> {
   const { player, isAuthorized, logger } = context;
   const state: MenuState = { page: 0, selectedUid: undefined, notice: undefined };
   const render = (closed: boolean): MenuView => {
@@ -256,7 +261,12 @@ export async function openMenu(message: Message<true>, context: MenuContext): Pr
     return renderMenu(snapshot, state, closed);
   };
 
-  const menu = await message.reply(render(false));
+  const response = await command.reply({ ...render(false), withResponse: true });
+  const menu = response.resource?.message;
+  if (menu === null || menu === undefined) {
+    logger.warn("menu message missing from interaction response");
+    return;
+  }
   let pendingRefresh: NodeJS.Timeout | undefined;
   let closed = false;
 
@@ -267,15 +277,18 @@ export async function openMenu(message: Message<true>, context: MenuContext): Pr
     pendingRefresh = setTimeout(() => {
       pendingRefresh = undefined;
       if (!closed) {
-        menu
-          .edit(render(false))
+        command
+          .editReply(render(false))
           .catch((error: unknown) => logger.debug("menu refresh failed", { error }));
       }
     }, REFRESH_DEBOUNCE_MS);
   };
   player.on("change", onChange);
 
-  const collector = menu.createMessageComponentCollector({ idle: MENU_IDLE_MS });
+  const collector = menu.createMessageComponentCollector({
+    idle: MENU_IDLE_MS,
+    time: MENU_LIFETIME_MS,
+  });
 
   collector.on("collect", async (interaction) => {
     if (
@@ -317,8 +330,8 @@ export async function openMenu(message: Message<true>, context: MenuContext): Pr
       clearTimeout(pendingRefresh);
     }
     if (reason !== "closed") {
-      menu
-        .edit(render(true))
+      command
+        .editReply(render(true))
         .catch((error: unknown) => logger.debug("menu close failed", { error }));
     }
   });

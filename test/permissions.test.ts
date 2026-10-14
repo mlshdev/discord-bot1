@@ -3,6 +3,8 @@ import { describe, it } from "node:test";
 import { PermissionFlagsBits, PermissionsBitField } from "discord.js";
 import {
   auditKey,
+  INVITE_PERMISSIONS,
+  INVITE_PERMISSIONS_INTEGER,
   missingPermissions,
   TEXT_CHANNEL_PERMISSIONS,
   VOICE_CHANNEL_PERMISSIONS,
@@ -10,14 +12,9 @@ import {
 
 describe("missingPermissions", () => {
   it("lists exactly the permissions that are not granted", () => {
-    const granted = new PermissionsBitField([
-      PermissionFlagsBits.ViewChannel,
-      PermissionFlagsBits.SendMessages,
-    ]);
-    assert.deepEqual(missingPermissions(granted, TEXT_CHANNEL_PERMISSIONS), [
-      "EmbedLinks",
-      "ReadMessageHistory",
-    ]);
+    const granted = new PermissionsBitField([PermissionFlagsBits.ViewChannel]);
+    assert.deepEqual(missingPermissions(granted, TEXT_CHANNEL_PERMISSIONS), ["SendMessages"]);
+    assert.deepEqual(missingPermissions(granted, VOICE_CHANNEL_PERMISSIONS), ["Connect", "Speak"]);
   });
 
   it("reports nothing when everything is granted", () => {
@@ -34,6 +31,18 @@ describe("missingPermissions", () => {
     assert.deepEqual(missingPermissions(null, VOICE_CHANNEL_PERMISSIONS), [
       ...VOICE_CHANNEL_PERMISSIONS,
     ]);
+  });
+});
+
+describe("INVITE_PERMISSIONS", () => {
+  it("matches the permissions integer in the invite link", () => {
+    assert.equal(INVITE_PERMISSIONS_INTEGER, 4543733985968384n);
+    assert.deepEqual(new PermissionsBitField(4543733985968384n).toArray(), [...INVITE_PERMISSIONS]);
+  });
+
+  it("covers the voice permissions the bot checks for", () => {
+    const granted = new PermissionsBitField(INVITE_PERMISSIONS);
+    assert.deepEqual(missingPermissions(granted, VOICE_CHANNEL_PERMISSIONS), ["ViewChannel"]);
   });
 });
 

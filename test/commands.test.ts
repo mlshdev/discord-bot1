@@ -1,46 +1,57 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { PREFIX, PRIVILEGED_COMMANDS, parseCommand } from "../src/commands.ts";
+import { ApplicationCommandOptionType, InteractionContextType } from "discord.js";
+import {
+  COMMAND_DEFINITIONS,
+  CommandName,
+  PRIVILEGED_COMMANDS,
+  toCommand,
+  URL_OPTION,
+} from "../src/commands.ts";
 
-describe("parseCommand", () => {
-  it("parses !add with its argument", () => {
-    assert.deepEqual(parseCommand("!add https://youtu.be/dQw4w9WgXcQ"), {
+describe("COMMAND_DEFINITIONS", () => {
+  it("registers /add, /ff, /mn and /won", () => {
+    assert.deepEqual(
+      COMMAND_DEFINITIONS.map((command) => command.name),
+      ["add", "ff", "mn", "won"],
+    );
+  });
+
+  it("gives /add one required url option", () => {
+    const add = COMMAND_DEFINITIONS.find((command) => command.name === CommandName.add);
+    assert.deepEqual(
+      add?.options?.map((option) => [option.name, option.type, option.required]),
+      [[URL_OPTION, ApplicationCommandOptionType.String, true]],
+    );
+  });
+
+  it("only offers the commands inside a server", () => {
+    for (const command of COMMAND_DEFINITIONS) {
+      assert.deepEqual(command.contexts, [InteractionContextType.Guild]);
+      assert.ok(command.description.length > 0);
+    }
+  });
+});
+
+describe("toCommand", () => {
+  it("maps /add with its url", () => {
+    assert.deepEqual(toCommand("add", "https://youtu.be/dQw4w9WgXcQ"), {
       kind: "add",
-      argument: "https://youtu.be/dQw4w9WgXcQ",
+      url: "https://youtu.be/dQw4w9WgXcQ",
     });
+    assert.equal(toCommand("add", null), undefined);
   });
 
-  it("parses !add without an argument", () => {
-    assert.deepEqual(parseCommand("!add"), { kind: "add", argument: "" });
+  it("maps the DJ commands", () => {
+    assert.deepEqual(toCommand("ff", null), { kind: "forceSkip" });
+    assert.deepEqual(toCommand("mn", null), { kind: "manage" });
+    assert.deepEqual(toCommand("won", null), { kind: "disconnect" });
   });
 
-  it("is case-insensitive and trims whitespace", () => {
-    assert.deepEqual(parseCommand("  !FF  "), { kind: "forceSkip" });
-  });
-
-  it("parses the privileged commands", () => {
-    assert.deepEqual(parseCommand("!ff"), { kind: "forceSkip" });
-    assert.deepEqual(parseCommand("!mn"), { kind: "manage" });
-    assert.deepEqual(parseCommand("!won"), { kind: "disconnect" });
-  });
-
-  it("ignores privileged commands with trailing text", () => {
-    assert.equal(parseCommand("!ff now"), undefined);
-  });
-
-  it("ignores unknown input", () => {
-    assert.equal(parseCommand(""), undefined);
-    assert.equal(parseCommand("hello"), undefined);
-    assert.equal(parseCommand("!play x"), undefined);
-    assert.equal(parseCommand("!addhttps://youtu.be/x"), undefined);
-    assert.equal(parseCommand("!constructor"), undefined);
-  });
-
-  it("uses the same single-character prefix for every command", () => {
-    assert.equal(PREFIX, "!");
-    assert.equal(parseCommand("!!ff"), undefined);
-    assert.equal(parseCommand("!!add https://youtu.be/dQw4w9WgXcQ"), undefined);
-    assert.equal(parseCommand("ff"), undefined);
+  it("rejects unknown names", () => {
+    assert.equal(toCommand("play", null), undefined);
+    assert.equal(toCommand("constructor", null), undefined);
+    assert.equal(toCommand("!ff", null), undefined);
   });
 
   it("marks only role-gated commands as privileged", () => {

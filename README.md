@@ -1,19 +1,23 @@
 # discord-bot1
 
-A Discord music bot that plays **YouTube only**, in **one** voice channel on **one** server, driven by prefix commands in **one** text channel. It runs on Node.js 24 LTS. Audio is fetched with [yt-dlp](https://github.com/yt-dlp/yt-dlp), which uses that same Node.js binary, sandboxed, to solve YouTube's JavaScript challenges. The container image is rebuilt automatically whenever yt-dlp publishes a new release.
+A Discord music bot that plays **YouTube only**, in **one** voice channel on **one** server, driven by slash commands in **one** text channel. It runs on Node.js 24 LTS. Audio is fetched with [yt-dlp](https://github.com/yt-dlp/yt-dlp), which uses that same Node.js binary, sandboxed, to solve YouTube's JavaScript challenges. The container image is rebuilt automatically whenever yt-dlp publishes a new release.
 
 Only audio is ever downloaded, never video. YouTube's Opus audio goes straight to Discord without being re-encoded.
 
 ## Commands
 
-All commands only work in the text channel set by `TEXT_CHANNEL_ID` on the server set by `GUILD_ID`. Everything else is ignored. Every command uses the same `!` prefix.
+The bot uses Discord's slash commands. Type `/` in the message box and pick a command from the list; Discord shows each one's description and fills in the `url` field for `/add`. The commands are registered on the server set by `GUILD_ID` every time the bot starts, so they appear immediately and only on that server.
+
+Commands only run in the text channel set by `TEXT_CHANNEL_ID`. Used anywhere else, the bot answers with a private reply pointing to that channel. Refusals and usage errors are always private (only you see them); results such as "Added …" are visible to everyone.
 
 | Command | Who | What it does |
 |---|---|---|
-| `!add <youtube-url>` | everyone | Adds a YouTube video to the queue. If nothing is playing, playback starts in `VOICE_CHANNEL_ID`. |
-| `!ff` | `DJ_ROLE_ID` only | Force-skips the current song. |
-| `!mn` | `DJ_ROLE_ID` only | Opens the interactive queue manager. |
-| `!won` | `DJ_ROLE_ID` only | Stops playback, clears the queue and leaves the voice channel. |
+| `/add url:<youtube-url>` | everyone | Adds a YouTube video to the queue. If nothing is playing, playback starts in `VOICE_CHANNEL_ID`. |
+| `/ff` | `DJ_ROLE_ID` only | Force-skips the current song. |
+| `/mn` | `DJ_ROLE_ID` only | Opens the interactive queue manager. |
+| `/won` | `DJ_ROLE_ID` only | Stops playback, clears the queue and leaves the voice channel. |
+
+Server admins can further limit who sees each command, and in which channels, under **Server Settings → Integrations → *bot name* → Command Permissions**. The bot's own channel and DJ-role checks still apply on top.
 
 Accepted links, over `https://` or `http://`:
 
@@ -24,7 +28,7 @@ Accepted links, over `https://` or `http://`:
 
 Extra parameters such as `&t=42s`, `?si=…` and `&list=…` are ignored, and only the linked video is added, never a playlist. Live streams, premieres and non-YouTube links are rejected.
 
-### Queue manager (`!mn`)
+### Queue manager (`/mn`)
 
 The menu shows what is playing now and the queue, ten tracks per page. It updates itself whenever the queue changes.
 
@@ -32,7 +36,7 @@ The menu shows what is playing now and the queue, ten tracks per page. It update
 - **Force skip**, **Pause/Resume**, **Shuffle** and **Clear queue** act on the whole queue.
 - **Prev/Next** page through long queues. **Close** ends the menu.
 
-Only members with the DJ role can use the buttons. Anyone else gets a private "not allowed" reply. The menu stops responding after five minutes without use.
+Only members with the DJ role can use the buttons. Anyone else gets a private "not allowed" reply. The menu stops responding after five minutes without use, and after 14 minutes at most, because Discord only lets the bot edit a slash-command reply for 15 minutes. Run `/mn` again to get a fresh one.
 
 ## Installation
 
@@ -48,46 +52,51 @@ This walks through everything from an empty Discord account to a bot playing mus
 1. Open the [Discord Developer Portal](https://discord.com/developers/applications) and click **New Application**. Name it, accept the terms and click **Create**.
 2. On **General Information**, copy the **Application ID**. You need it for the invite link in step 2.
 3. Open the **Bot** page and click **Reset Token**, then copy the token. This is `DISCORD_TOKEN`. Discord shows it only once. Anyone who has it controls the bot, so never commit or share it.
-4. Still on **Bot**, scroll to **Privileged Gateway Intents**. Turn on **Message Content Intent**, leave **Presence Intent** and **Server Members Intent** off, and click **Save Changes**.
-
-   This is a *gateway intent*, not a permission. It never appears in the invite link's permission list, in role settings or in channel overrides. It is a switch on the application itself that decides whether Discord sends the text of messages to the bot. Prefix commands such as `!add` cannot work without it. If it is off, Discord refuses the bot's connection (close code `4014`), and the bot logs `discord login failed` with `Used disallowed intents` or `Privileged intent provided is not enabled or whitelisted` and exits.
+4. Still on **Bot**, leave all three **Privileged Gateway Intents** (Presence, Server Members, Message Content) **off**. Slash commands arrive as interactions, so the bot never needs to read message text. If you turned **Message Content Intent** on for an older version of this bot, you can turn it off.
 5. Optional but recommended: turn off **Public Bot** so only you can add the bot to servers. If the portal refuses to save, first open **Installation**, set **Install Link** to **None**, and save. Then turn **Public Bot** off.
 
 ### Step 2: Invite the bot to your server
 
 1. In the portal, open **OAuth2 → URL Generator**.
-2. Under **Scopes**, tick **`bot`** only. The bot has no slash commands, so `applications.commands` is not needed.
-3. Under **Bot Permissions**, tick exactly these:
+2. Under **Scopes**, tick **`bot`** and **`applications.commands`**. Without `applications.commands` the bot cannot register its slash commands and exits at startup.
+3. Under **Bot Permissions**, tick exactly these nine:
 
-   | Permission | Why the bot needs it |
+   | Permission | Role in this bot |
    |---|---|
-   | View Channels | See the command channel and the voice channel |
-   | Send Messages | Answer commands and announce tracks |
-   | Embed Links | Draw the `!mn` queue manager |
-   | Read Message History | Answer commands as replies. Discord requires this to reply to a message. |
    | Connect | Join the voice channel |
    | Speak | Play audio |
+   | Use Voice Activity | Voice permission granted with the voice set |
+   | Priority Speaker | Voice permission granted with the voice set |
+   | Use Soundboard | Voice permission granted with the voice set |
+   | Use External Sounds | Voice permission granted with the voice set |
+   | Use Embedded Activities | Voice permission granted with the voice set |
+   | Use Application Commands | Slash-command permission granted with the set |
+   | Bypass Slowmode | "Now playing" announcements are not delayed if the text channel has slowmode |
 
-   Do not grant *Administrator* or anything else. The bot never needs more than this.
+   The bot's code uses Connect, Speak and Bypass Slowmode; the others are part of the requested set but no current feature depends on them. Do not grant *Administrator*.
+
+   **View Channels** and **Send Messages** are deliberately not in this list. The bot gets them from `@everyone`, which has both by default. Slash-command replies and the queue manager need neither, because Discord delivers them through the interaction itself. Only the unprompted "now playing" announcements are posted as normal channel messages.
 4. If an **Integration Type** selector is shown, choose **Guild Install**.
 5. Copy the generated URL, open it in a browser, pick your server and click **Authorize**.
 
-You can also build the link yourself. `3230720` is the sum of the six permissions above:
+You can also build the link yourself. `4543733985968384` is the sum of the nine permissions above:
 
 ```text
-https://discord.com/oauth2/authorize?client_id=<APPLICATION_ID>&scope=bot&permissions=3230720&integration_type=0
+https://discord.com/oauth2/authorize?client_id=<APPLICATION_ID>&scope=bot+applications.commands&permissions=4543733985968384&integration_type=0
 ```
 
-After authorising, the bot appears offline in the member list and Discord creates a role with the bot's name. That role carries the six permissions.
+After authorising, the bot appears offline in the member list and Discord creates a role with the bot's name. That role carries the nine permissions.
+
+If the bot was added earlier with the old link (`scope=bot`, `permissions=3230720`), open the new link and authorise again for the same server. Discord adds the `applications.commands` scope without kicking the bot. If the bot's role in **Server Settings → Roles** still shows the old permissions afterwards, set them there by hand.
 
 ### Step 3: Prepare the channels and the DJ role
 
 1. Choose or create:
    - a **text channel** for commands. The text chat built into a voice channel also works.
    - a **voice channel** to play in.
-   - a **DJ role** for the people allowed to skip, open the queue manager and stop the bot. Give this role to those members. Everyone in the text channel can still use `!add`.
-2. If either channel is private, meaning `@everyone` is denied **View Channel** on the channel or its category, the bot's role does not reach it. Open the channel's **Edit Channel → Permissions**, add the bot's role and allow:
-   - on the text channel: View Channel, Send Messages, Embed Links, Read Message History
+   - a **DJ role** for the people allowed to skip, open the queue manager and stop the bot. Give this role to those members. Everyone in the text channel can still use `/add`.
+2. If either channel is private, meaning `@everyone` is denied **View Channel** on the channel or its category, or if `@everyone` cannot send messages there, the bot does not get those permissions either. Open the channel's **Edit Channel → Permissions**, add the bot's role and allow:
+   - on the text channel: View Channel, Send Messages
    - on the voice channel: View Channel, Connect, Speak
 3. If the voice channel has a user limit, leave room for the bot. It cannot join a full channel.
 
@@ -127,21 +136,23 @@ The image `ghcr.io/mlshdev/discord-bot1:latest` is public, so you don't need to 
 ### Step 6: Check that it works
 
 1. `docker compose ps` shows the container as `healthy` within about 30 seconds.
-2. `docker compose logs discord-bot1` contains a `"message":"bot ready"` line with your server and channel names, and the bot shows as online in Discord.
-3. In the command channel, send `!add https://www.youtube.com/watch?v=dQw4w9WgXcQ`. The bot replies `➕ Added …, starting playback.`, joins the voice channel and plays.
-4. As a member with the DJ role, send `!mn` to open the queue manager, and `!won` to stop.
+2. `docker compose logs discord-bot1` contains `"message":"slash commands registered"` and `"message":"bot ready"` lines, and the bot shows as online in Discord.
+3. In the command channel, type `/add`, pick the bot's command, paste `https://www.youtube.com/watch?v=dQw4w9WgXcQ` into `url` and press Enter. The bot shows "is thinking…", then `➕ Added …, starting playback.`, joins the voice channel and plays.
+4. As a member with the DJ role, run `/mn` to open the queue manager, and `/won` to stop.
 
 ### Troubleshooting
 
 | Symptom | Cause and fix |
 |---|---|
 | Container exits with code `78`, log says `invalid configuration` | A required variable is missing, or an ID is not a 17–20 digit number. Fix `.env`. |
-| Container exits with code `78`, log says `startup validation failed` | An ID points at the wrong place, or the bot is not on that server or cannot see a channel. Check step 3 and step 4. |
-| Container exits with code `1`, log says `discord login failed` | The token is wrong or was reset (step 1.3), or **Message Content Intent** is off (step 1.4). |
-| The bot is online but ignores commands | Commands only count in `TEXT_CHANNEL_ID` on `GUILD_ID`. Messages from other bots are ignored. |
-| `missing discord permissions` in the logs, or an error with `code` `50013` (Missing Permissions) / `50001` (Missing Access) | The bot's role lacks a permission in that channel. The `missing` field names the exact permissions. Fix the channel overrides from step 3.2. The bot re-checks on its own and logs `discord permissions ok` once fixed. |
+| Container exits with code `78`, log says `startup validation failed` | An ID points at the wrong place, or the bot is not on that server or cannot see a channel. Check step 3 and step 4. If the error has `code` `50001` and a route ending in `/commands`, the bot was invited without the `applications.commands` scope: authorise the link from step 2 again. |
+| Container exits with code `1`, log says `discord login failed` | The token is wrong or was reset (step 1.3). |
+| Typing `/` does not list the bot's commands | Restart the bot and check for `slash commands registered` in the logs. In Discord, press Ctrl+R (Cmd+R on macOS) to reload. Also check **Server Settings → Integrations** in case an admin hid the commands. |
+| The bot answers "Music commands only work in #…" | Commands only run in `TEXT_CHANNEL_ID`. |
+| "The application did not respond" | The bot was offline or still starting. Check `docker compose ps` and the logs. |
+| `missing discord permissions` in the logs, or `failed to send announcement` with `code` `50013` (Missing Permissions) / `50001` (Missing Access) | The bot lacks a permission in that channel. The `missing` field names the exact permissions. Fix the channel overrides from step 3.2. The bot re-checks on its own and logs `discord permissions ok` once fixed. Commands keep working meanwhile; only the "now playing" announcements are lost. |
 | The bot does not join voice | It is missing Connect or View Channel on the voice channel, or the channel is full. |
-| `!add` answers "Sign in to confirm you're not a bot" | YouTube is blocking the host's IP address. See [YouTube cookies](#youtube-cookies-optional). |
+| `/add` answers "Sign in to confirm you're not a bot" | YouTube is blocking the host's IP address. See [YouTube cookies](#youtube-cookies-optional). |
 
 ### Update and uninstall
 
@@ -156,9 +167,9 @@ All settings come from `.env`. `.env.example` is the template.
 |---|---|---|---|
 | `DISCORD_TOKEN` | yes | — | Bot token |
 | `GUILD_ID` | yes | — | The only server the bot responds in |
-| `TEXT_CHANNEL_ID` | yes | — | The only channel commands are read from. A voice channel's built-in chat also works. |
+| `TEXT_CHANNEL_ID` | yes | — | The only channel commands run in, and where "now playing" is announced. A voice channel's built-in chat also works. |
 | `VOICE_CHANNEL_ID` | yes | — | The voice channel the bot plays in |
-| `DJ_ROLE_ID` | yes | — | Role allowed to use `!ff`, `!mn` and `!won` |
+| `DJ_ROLE_ID` | yes | — | Role allowed to use `/ff`, `/mn` and `/won` |
 | `MAX_QUEUE_SIZE` | no | `100` | Maximum number of queued tracks (1–1000) |
 | `IDLE_DISCONNECT_SECONDS` | no | `300` | How long the bot stays in voice with an empty queue before leaving. `0` means never leave. |
 | `AUDIO_BITRATE_KBPS` | no | `128` | Opus bitrate (16–510). Only used in the rare case a video has no Opus audio and has to be re-encoded. Opus audio is passed through at its original quality. |
@@ -171,7 +182,7 @@ The bot checks the IDs at startup. If one is wrong it exits with code `78`.
 
 ### YouTube cookies (optional)
 
-Servers hosted in data centres are often blocked by YouTube. If `!add` fails with "Sign in to confirm you're not a bot":
+Servers hosted in data centres are often blocked by YouTube. If `/add` fails with "Sign in to confirm you're not a bot":
 
 1. Export a `cookies.txt` from a logged-in browser session. A throwaway account is recommended.
 2. Save it as `discord-bot1/config/cookies.txt` next to `compose.yml`. The container runs as UID 1000, so the file must be readable by that user. The cookies log in to the account, so keep them private: `sudo chown 1000:1000 discord-bot1/config/cookies.txt && sudo chmod 600 discord-bot1/config/cookies.txt`. Git ignores this file.
@@ -186,17 +197,19 @@ The file is mounted read-only. The bot works on a private copy inside the contai
 - Every line has `timestamp` (UTC), `severity`, `message`, `service` and `environment`, plus fields for the event. Errors carry an `error` object with `name`, `message` and `stack`, and depending on the error: Discord's `code`, `status`, `method` and `route`; Node's `code`, `syscall` and `path`; and a `cause` chain. Tokens in interaction and webhook routes are replaced with `[redacted]`.
 
   ```json
-  {"timestamp":"2026-10-14T16:20:03.118Z","severity":"warn","message":"missing discord permissions","service":"discord-bot1","environment":"production","channel":"text","channelId":"123456789012345678","channelName":"music","missing":["EmbedLinks"]}
-  {"timestamp":"2026-10-14T16:21:40.502Z","severity":"error","message":"command failed","service":"discord-bot1","environment":"production","messageId":"123456789012345679","error":{"name":"DiscordAPIError[50013]","message":"Missing Permissions","code":50013,"status":403,"method":"POST","route":"/api/v10/channels/123456789012345678/messages","stack":"…"}}
+  {"timestamp":"2026-10-14T16:20:03.118Z","severity":"warn","message":"missing discord permissions","service":"discord-bot1","environment":"production","channel":"text","channelId":"123456789012345678","channelName":"music","missing":["SendMessages"]}
+  {"timestamp":"2026-10-14T16:21:40.502Z","severity":"warn","message":"failed to send announcement","service":"discord-bot1","environment":"production","error":{"name":"DiscordAPIError[50013]","message":"Missing Permissions","code":50013,"status":403,"method":"POST","route":"/api/v10/channels/123456789012345678/messages","stack":"…"}}
   ```
 
 - Main messages:
 
   | Message | Severity | Meaning |
   |---|---|---|
+  | `slash commands registered` | info | `/add`, `/ff`, `/mn` and `/won` were registered on the server |
   | `bot ready` | info | Logged in and the channels were validated |
   | `discord permissions ok` / `missing discord permissions` | info / warn | Permission check of the command and voice channels. It runs at startup and again whenever a role or one of the two channels changes, and is logged only when the result changes. |
-  | `command received` / `command denied` | info | A command was accepted, or refused because the user lacks the DJ role |
+  | `command received` / `command denied` | info | A command was accepted, or refused (`reason` is `missing DJ role` or `wrong channel`) |
+  | `command failed` | error | A command threw. The user gets a private error reply. Includes `command` and `interactionId`. |
   | `menu interaction denied` | info | A queue-manager button was clicked by someone without the DJ role |
   | `now playing` | info | A track started. Includes `inputType` and whether it was `transcoded`. |
   | `track resolve failed` / `audio source failed` | warn | yt-dlp could not resolve or stream a video. The reason is included. |
