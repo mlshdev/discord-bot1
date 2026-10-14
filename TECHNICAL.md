@@ -31,30 +31,32 @@ There is no build step. Node strips the types at load time, so the source must s
 
 ```
 src/
-  index.ts      entrypoint: config, Discord client, message routing, role checks, shutdown
+  index.ts      entrypoint: config, Discord client, command registration, interaction routing, channel/role checks, shutdown
   config.ts     typed env parsing (ConfigError → exit 78)
-  commands.ts   single "!" prefix (PREFIX) parser → discriminated union Command
+  commands.ts   slash command definitions (COMMAND_DEFINITIONS) and name → discriminated union Command
   youtube.ts    URL allowlist → canonical https://www.youtube.com/watch?v=<id>
   ytdlp.ts      yt-dlp metadata resolution + audio source (Opus passthrough, ffmpeg fallback)
   queue.ts      pure TrackQueue (enqueue/remove/move/promote/shuffle)
   player.ts     MusicPlayer: voice connection, AudioPlayer, queue advancement
-  menu.ts       !mn component UI (embed + select + buttons) and its collector
+  menu.ts       /mn component UI (embed + select + buttons) and its collector
   format.ts     duration/markdown helpers
   health.ts     GET /healthz
   logger.ts     JSON-lines logger, LOG_LEVEL threshold, error serializer with token redaction
-  permissions.ts  required channel permissions and the pure missing-permission check
+  permissions.ts  invite permission set, required channel permissions and the pure missing-permission check
 test/           node:test unit tests for every pure module
 ```
 
 ## Request flow
 
-1. `MessageCreate` events are dropped unless they come from a non-bot author in `GUILD_ID` / `TEXT_CHANNEL_ID`.
-2. `parseCommand` turns the message into a `Command`. Commands in `PRIVILEGED_COMMANDS` need `member.roles.cache.has(DJ_ROLE_ID)`.
-3. `!add`:
-   1. `parseYouTubeUrl` checks the host against an allowlist and validates the 11-character video ID. It then rebuilds a canonical URL, so user text never reaches yt-dlp's argv, and `--` is always passed before the URL as well.
-   2. `yt-dlp --print '%(.{…})j'` resolves the metadata. Live streams and premieres are rejected.
-   3. The track is enqueued, and playback starts if the player is idle.
-4. Playback (`YtDlp.open`):
+1. On `ClientReady`, `guild.commands.set(COMMAND_DEFINITIONS)` bulk-overwrites the guild's command set (`PUT /applications/<id>/guilds/<id>/commands`). Guild commands appear in the client instantly, unlike global ones, and only exist on `GUILD_ID`. Re-running it with the same definitions is a no-op on Discord's side. Every command is `contexts: [Guild]`, `integration_types: [GuildInstall]`. A failure (typically `50001` when the invite lacked `applications.commands`) is a startup validation failure and exits 78.
+2. `InteractionCreate` events that are not chat-input commands from the cached `GUILD_ID` guild are ignored. Component clicks are handled by the menu's own collector.
+3. `toCommand(commandName, url option)` maps the interaction to a `Command`. Outside `TEXT_CHANNEL_ID` the bot answers ephemerally and logs `command denied` with `reason: "wrong channel"`. Commands in `PRIVILEGED_COMMANDS` need `member.roles.cache.has(DJ_ROLE_ID)`. Refusals and usage errors are ephemeral, results are public. A thrown error is logged as `command failed` and answered with an ephemeral follow-up or reply.
+4. `/add`:
+   1. The URL and the queue limit are checked first and answered ephemerally. Only then does the bot call `deferReply()`, because yt-dlp regularly takes longer than the 3 s Discord allows for the first response. The result is sent with `editReply()`.
+   2. `parseYouTubeUrl` checks the host against an allowlist and validates the 11-character video ID. It then rebuilds a canonical URL, so user text never reaches yt-dlp's argv, and `--` is always passed before the URL as well.
+   3. `yt-dlp --print '%(.{…})j'` resolves the metadata. Live streams and premieres are rejected.
+   4. The track is enqueued, and playback starts if the player is idle.
+5. Playback (`YtDlp.open`):
 
    ```
    yt-dlp -f "bestaudio[acodec=opus]/bestaudio" -o - URL
@@ -63,14 +65,14 @@ test/           node:test unit tests for every pure module
        └─ anything else → ffmpeg -c:a libopus -b:a <bitrate> -f ogg → OggOpus   one encode
    ```
 
-   - **No video, ever.** The format selector only matches audio-only formats. There is no `/best` fallback that could pick a muxed video stream, so a video without an audio-only format fails at `!add` with a clear error. `resolve()` uses the same selector, so the failure shows up before the track is queued.
+   - **No video, ever.** The format selector only matches audio-only formats. There is no `/best` fallback that could pick a muxed video stream, so a video without an audio-only format fails at `/add` with a clear error. `resolve()` uses the same selector, so the failure shows up before the track is queued.
    - **Transcoding is minimised.** YouTube offers Opus in WebM (itag 251/250/249) for practically every video, so the downloaded bytes are only demuxed into Opus packets and sent to Discord. Verified in the container: `webm/opus`, `transcoded: false`, with no ffmpeg process started.
    - **Fallback.** `demuxProbe` sends anything it can't validate as Discord-ready (48 kHz stereo) Opus to a single ffmpeg encode to Ogg/Opus. That covers AAC-only formats and mono Opus. The fallback was checked with an AAC input stream. `AUDIO_BITRATE_KBPS` only applies here.
    - Passthrough Opus keeps YouTube's original bitrate, about 130 kbps VBR for itag 251.
    - In both paths `@discordjs/voice` only demuxes, so no Opus encoder package (`@discordjs/opus` or `opusscript`) is needed.
    - Transport encryption uses Node's native `aes-256-gcm`.
    - DAVE is handled by `@snazzah/davey`.
-5. yt-dlp needs a JavaScript runtime to solve YouTube's challenges (EJS). The bot passes `--no-js-runtimes --js-runtimes node:<process.execPath>`, so the only runtime yt-dlp can use is the exact Node binary running the bot. There is no `PATH` lookup and nothing to configure.
+6. yt-dlp needs a JavaScript runtime to solve YouTube's challenges (EJS). The bot passes `--no-js-runtimes --js-runtimes node:<process.execPath>`, so the only runtime yt-dlp can use is the exact Node binary running the bot. There is no `PATH` lookup and nothing to configure.
    - `yt_dlp_ejs` holds only the solver *scripts*. It is not a runtime, so a JavaScript engine is still required.
    - The official onedir build bundles `yt_dlp_ejs` (0.8.0 in yt-dlp 2026.08.19), so the scripts come from the Python package, `ejs:github` and `ejs:npm` stay disabled, and nothing is downloaded at solve time.
    - yt-dlp pipes the scripts to `node --permission -`. Under the permission model the solver has no filesystem, network, child-process, worker or native-addon access.
@@ -90,22 +92,24 @@ test/           node:test unit tests for every pure module
 - `renderMenu(snapshot, state, closed)` is a pure function of the player snapshot plus per-menu state (`page`, `selectedUid`, `notice`).
 - Tracks are referenced by a per-process `uid`, never by position, so concurrent edits cannot hit the wrong track.
 - Every interaction re-checks the DJ role. Unauthorised clicks get an ephemeral reply.
-- The menu subscribes to `MusicPlayer`'s `change` event and re-renders, debounced to 1 s. The collector ends after 5 minutes idle, and then the components are removed.
+- `/mn` answers with `reply({ withResponse: true })` and collects components on the returned message. Each click is answered with `update()` on its own fresh interaction token.
+- The menu subscribes to `MusicPlayer`'s `change` event and re-renders through `editReply()` on the `/mn` interaction, debounced to 1 s. The collector ends after 5 minutes idle or 14 minutes in total, and then the components are removed. The cap exists because the `/mn` interaction token, which every refresh and the final close edit use, expires after 15 minutes.
 
-## Discord contract: intents vs. permissions
+## Discord contract: interactions, intents and permissions
 
-Discord has two separate access mechanisms, and setup guides often mix them up. "Message Content" is a **gateway intent**, not a permission.
+Discord has three separate access mechanisms, and setup guides often mix them up.
 
 | Mechanism | Where it is set | What this bot uses |
 |---|---|---|
-| Gateway intents | `Client({ intents })` in `index.ts`. Privileged ones must also be switched on under **Developer Portal → Bot → Privileged Gateway Intents**. | `Guilds`, `GuildVoiceStates`, `GuildMessages`, and the privileged **`MessageContent`** (`1 << 15`) |
-| Permissions | The invite link (`permissions=` bitfield), the bot's role and channel overrides | View Channels, Send Messages, Embed Links, Read Message History, Connect, Speak = `3230720` |
+| OAuth2 scopes | The invite link (`scope=`) | `bot` and `applications.commands` |
+| Gateway intents | `Client({ intents })` in `index.ts`. Privileged ones must also be switched on under **Developer Portal → Bot → Privileged Gateway Intents**. | `Guilds`, `GuildVoiceStates`. No privileged intent. |
+| Permissions | The invite link (`permissions=` bitfield), the bot's role and channel overrides | `INVITE_PERMISSIONS` = `4543733985968384` (below) |
 
-- `MessageContent` is needed because the bot reads plain-text prefix commands. Discord only exempts DMs, mentions of the bot and replies to the bot's own messages. Without the intent, `message.content` is empty for ordinary guild messages.
-- Requesting a privileged intent that the portal has not enabled makes Discord close the gateway with `4014`. discord.js then rejects `login()` (`Used disallowed intents` / `Privileged intent provided is not enabled or whitelisted`), and the bot logs `discord login failed` and exits with code 1.
-- Apps with fewer than 10,000 users can turn the switch on themselves. Above that, Discord requires a privileged-intent review, which a single-guild bot never reaches.
-- No `GuildMembers` intent is needed. `message.member` and `interaction.member` arrive with the event, and `roles.cache` is filled from them, so the DJ-role check works without it.
-- The `bot` scope is the only scope. `applications.commands` is not requested because there are no slash commands.
+- **Slash commands instead of prefix commands.** Interactions are delivered over the gateway regardless of intents, carry the invoking member with their roles, and are answered through the interaction webhook. So the bot needs neither `GuildMessages` nor the privileged `MessageContent` intent, which Discord reserves for bots that actually need message text. Without `MessageContent` there is no `4014` close code to run into.
+- No `GuildMembers` intent is needed. `interaction.member` arrives with the event and `roles.cache` is filled from it, so the DJ-role check works without it.
+- **Invite permissions** (`INVITE_PERMISSIONS` in `permissions.ts`, checked against the integer by a unit test): Priority Speaker, Connect, Speak, Use Voice Activity, Use Application Commands, Use Embedded Activities, Use Soundboard, Use External Sounds, Bypass Slowmode. These are the permissions the owner chose. The code depends on Connect and Speak to play, and on Bypass Slowmode so announcements are not throttled in a slowmode channel. The rest have no feature behind them.
+- **What needs channel permissions.** Interaction replies, follow-ups and component updates go through `/interactions/<id>/<token>` and `/webhooks/<app>/<token>`, which need no channel permission. Only the unprompted announcements (`MusicPlayer.announce` → `channel.send`) are channel messages. So the audit checks `TEXT_CHANNEL_PERMISSIONS` = View Channel, Send Messages and `VOICE_CHANNEL_PERMISSIONS` = View Channel, Connect, Speak. View Channel and Send Messages are not in the invite set; they come from `@everyone`, which grants both by default, or from channel overrides. If they are missing, the audit warns and announcements fail with `50001`/`50013`, but commands still work.
+- Admins can restrict commands further per role or channel in **Server Settings → Integrations**. The bot does not set `default_member_permissions`, so it does not fight those overrides; its own channel and DJ-role checks always run on top.
 
 See README → *Installation* for the step-by-step setup.
 
@@ -118,7 +122,7 @@ See README → *Installation* for the step-by-step setup.
   - `cause`, up to 3 levels deep.
 - Permission audit (`permissions.ts`): `missingPermissions` checks the bot's resolved channel permissions (`permissionsFor(me)`, where Administrator counts as everything) against `TEXT_CHANNEL_PERMISSIONS` and `VOICE_CHANNEL_PERMISSIONS`. It runs on `ClientReady` and again on `ChannelUpdate` for the two configured channels and on `GuildRole{Create,Update,Delete}`, all of which arrive with the `Guilds` intent. `auditKey` keeps the logs quiet: the result is logged only when it differs from the previous audit. A missing permission is a warning, not a failure, because it can be fixed while the bot runs.
 - The boot logger handles `invalid configuration` and any rejection escaping `main()` (`fatal startup error`), so even a crash before the configuration loads produces JSON instead of a raw Node stack trace.
-- At `debug` level, voice connection and audio player state transitions are logged, along with failures that are tolerated (typing indicator, menu edits, closed pipes).
+- At `debug` level, voice connection and audio player state transitions are logged, along with failures that are tolerated (menu edits, replies to interactions that already expired, closed pipes).
 
 ## Container image
 

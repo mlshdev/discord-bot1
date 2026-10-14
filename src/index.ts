@@ -1,17 +1,25 @@
 import {
   type ButtonInteraction,
+  type ChatInputCommandInteraction,
   Client,
   Events,
   GatewayIntentBits,
   type Guild,
   type GuildMember,
   type GuildTextBasedChannel,
-  type Message,
+  type Interaction,
+  MessageFlags,
   type Role,
   type StringSelectMenuInteraction,
   type VoiceBasedChannel,
 } from "discord.js";
-import { type Command, PRIVILEGED_COMMANDS, parseCommand } from "./commands.ts";
+import {
+  COMMAND_DEFINITIONS,
+  type Command,
+  PRIVILEGED_COMMANDS,
+  toCommand,
+  URL_OPTION,
+} from "./commands.ts";
 import { type Config, ConfigError, loadConfig } from "./config.ts";
 import { describeTrack } from "./format.ts";
 import { startHealthServer } from "./health.ts";
@@ -38,111 +46,129 @@ interface Runtime {
   readonly player: MusicPlayer;
 }
 
+type CommandInteraction = ChatInputCommandInteraction<"cached">;
+
 function hasDjRole(member: GuildMember | null, config: Config): boolean {
   return member?.roles.cache.has(config.djRoleId) ?? false;
 }
 
+async function replyPrivately(interaction: CommandInteraction, content: string): Promise<void> {
+  if (interaction.deferred || interaction.replied) {
+    await interaction.followUp({ content, flags: MessageFlags.Ephemeral });
+  } else {
+    await interaction.reply({ content, flags: MessageFlags.Ephemeral });
+  }
+}
+
 async function handleAdd(
-  message: Message<true>,
+  interaction: CommandInteraction,
   argument: string,
   runtime: Runtime,
 ): Promise<void> {
   const url = parseYouTubeUrl(argument);
   if (url === undefined) {
-    await message.reply(
-      "Usage: `!add <youtube-video-url>` — only YouTube video links are accepted.",
+    await replyPrivately(
+      interaction,
+      "Only YouTube video links are accepted, for example `/add url:https://youtu.be/dQw4w9WgXcQ`.",
     );
     return;
   }
   if (runtime.player.queueIsFull) {
-    await message.reply(`The queue is full (${runtime.config.maxQueueSize} tracks).`);
+    await replyPrivately(interaction, `The queue is full (${runtime.config.maxQueueSize} tracks).`);
     return;
   }
-  await message.channel
-    .sendTyping()
-    .catch((error: unknown) => runtime.logger.debug("typing indicator failed", { error }));
+  // yt-dlp usually needs longer than the 3 seconds Discord allows before the first response.
+  await interaction.deferReply();
   let info: Awaited<ReturnType<YtDlp["resolve"]>>;
   try {
     info = await runtime.ytDlp.resolve(url);
   } catch (error) {
     runtime.logger.warn("track resolve failed", { url, error });
     const reason = error instanceof TrackResolveError ? error.message : "unexpected error";
-    await message.reply(`⚠️ Could not add that video: ${reason}`);
+    await interaction.editReply(`⚠️ Could not add that video: ${reason}`);
     return;
   }
   try {
-    const result = runtime.player.enqueue(info, message.author.id);
-    await message.reply(
+    const result = runtime.player.enqueue(info, interaction.user.id);
+    await interaction.editReply(
       result.kind === "started"
         ? `➕ Added ${describeTrack(result.track)}, starting playback.`
         : `➕ Added ${describeTrack(result.track)} at position **${result.position}**.`,
     );
   } catch (error) {
     if (error instanceof QueueFullError) {
-      await message.reply(`The queue is full (${error.capacity} tracks).`);
+      await interaction.editReply(`The queue is full (${error.capacity} tracks).`);
       return;
     }
     throw error;
   }
 }
 
-async function dispatch(message: Message<true>, command: Command, runtime: Runtime): Promise<void> {
+async function dispatch(
+  interaction: CommandInteraction,
+  command: Command,
+  runtime: Runtime,
+): Promise<void> {
   const { player } = runtime;
   switch (command.kind) {
     case "add":
-      await handleAdd(message, command.argument, runtime);
+      await handleAdd(interaction, command.url, runtime);
       return;
     case "forceSkip": {
       const skipped = player.forceSkip();
-      await message.reply(
+      await interaction.reply(
         skipped === undefined ? "Nothing is playing." : `⏭️ Skipped ${describeTrack(skipped)}`,
       );
       return;
     }
     case "manage":
-      await openMenu(message, {
+      await openMenu(interaction, {
         player,
         logger: runtime.logger,
-        isAuthorized: (interaction: ButtonInteraction | StringSelectMenuInteraction) =>
-          interaction.inCachedGuild() &&
-          interaction.guildId === runtime.config.guildId &&
-          hasDjRole(interaction.member, runtime.config),
+        isAuthorized: (component: ButtonInteraction | StringSelectMenuInteraction) =>
+          component.inCachedGuild() &&
+          component.guildId === runtime.config.guildId &&
+          hasDjRole(component.member, runtime.config),
       });
       return;
     case "disconnect": {
       const cleared = player.disconnect();
-      await message.reply(`👋 Disconnected and cleared ${cleared} queued track(s).`);
+      await interaction.reply(`👋 Disconnected and cleared ${cleared} queued track(s).`);
       return;
     }
   }
 }
 
-async function handleMessage(message: Message, runtime: Runtime): Promise<void> {
-  const { config } = runtime;
-  if (
-    message.author.bot ||
-    !message.inGuild() ||
-    message.guildId !== config.guildId ||
-    message.channelId !== config.textChannelId
-  ) {
-    return;
-  }
-  const command = parseCommand(message.content);
+async function handleCommand(interaction: CommandInteraction, runtime: Runtime): Promise<void> {
+  const { config, logger } = runtime;
+  const command = toCommand(interaction.commandName, interaction.options.getString(URL_OPTION));
   if (command === undefined) {
+    logger.warn("unknown command", { command: interaction.commandName });
+    await replyPrivately(interaction, "Unknown command.");
     return;
   }
-  if (PRIVILEGED_COMMANDS.has(command.kind) && !hasDjRole(message.member, config)) {
-    runtime.logger.info("command denied", {
+  if (interaction.channelId !== config.textChannelId) {
+    logger.info("command denied", {
       command: command.kind,
-      userId: message.author.id,
+      userId: interaction.user.id,
+      channelId: interaction.channelId,
+      reason: "wrong channel",
+    });
+    await replyPrivately(interaction, `Music commands only work in <#${config.textChannelId}>.`);
+    return;
+  }
+  if (PRIVILEGED_COMMANDS.has(command.kind) && !hasDjRole(interaction.member, config)) {
+    logger.info("command denied", {
+      command: command.kind,
+      userId: interaction.user.id,
       reason: "missing DJ role",
       djRoleId: config.djRoleId,
     });
-    await message.reply(`⛔ This command requires the <@&${config.djRoleId}> role.`);
+    await replyPrivately(interaction, `⛔ This command requires the <@&${config.djRoleId}> role.`);
     return;
   }
-  runtime.logger.info("command received", { command: command.kind, userId: message.author.id });
-  await dispatch(message, command, runtime);
+  logger.info("command received", { command: command.kind, userId: interaction.user.id });
+  await dispatch(interaction, command, runtime);
 }
 
 async function auditChannels(
@@ -218,12 +244,7 @@ async function main(): Promise<void> {
   logger.info("yt-dlp detected", { version: await ytDlp.version() });
 
   const client = new Client({
-    intents: [
-      GatewayIntentBits.Guilds,
-      GatewayIntentBits.GuildVoiceStates,
-      GatewayIntentBits.GuildMessages,
-      GatewayIntentBits.MessageContent,
-    ],
+    intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates],
     allowedMentions: { parse: [], repliedUser: false },
   });
 
@@ -246,6 +267,11 @@ async function main(): Promise<void> {
         throw new ConfigError("VOICE_CHANNEL_ID does not point to a voice channel in the guild");
       }
       const announceChannel: GuildTextBasedChannel = textChannel;
+      // Guild commands replace the whole set in one call and show up in the client instantly.
+      const registered = await guild.commands.set([...COMMAND_DEFINITIONS]);
+      logger.info("slash commands registered", {
+        commands: registered.map((command) => command.name),
+      });
       const player = new MusicPlayer({
         guildId: guild.id,
         voiceChannelId: voiceChannel.id,
@@ -302,13 +328,31 @@ async function main(): Promise<void> {
     }
   });
 
-  client.on(Events.MessageCreate, (message) => {
-    if (runtime === undefined) {
+  client.on(Events.InteractionCreate, (interaction: Interaction) => {
+    if (
+      !interaction.isChatInputCommand() ||
+      !interaction.inCachedGuild() ||
+      interaction.guildId !== config.guildId
+    ) {
       return;
     }
-    handleMessage(message, runtime).catch((error: unknown) =>
-      logger.error("command failed", { error, messageId: message.id }),
-    );
+    if (runtime === undefined) {
+      void interaction
+        .reply({ content: "The bot is still starting, try again.", flags: MessageFlags.Ephemeral })
+        .catch((error: unknown) => logger.debug("startup reply failed", { error }));
+      return;
+    }
+    const active = runtime;
+    handleCommand(interaction, active).catch(async (error: unknown) => {
+      logger.error("command failed", {
+        error,
+        command: interaction.commandName,
+        interactionId: interaction.id,
+      });
+      await replyPrivately(interaction, "⚠️ Something went wrong running that command.").catch(
+        (replyError: unknown) => logger.debug("error reply failed", { error: replyError }),
+      );
+    });
   });
   client.on(Events.Error, (error) => logger.error("discord client error", { error }));
   client.on(Events.Warn, (warning) => logger.warn("discord client warning", { warning }));

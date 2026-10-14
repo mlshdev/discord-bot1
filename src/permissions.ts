@@ -1,10 +1,26 @@
-import type { PermissionsBitField, PermissionsString } from "discord.js";
+import { PermissionsBitField, type PermissionsString } from "discord.js";
 
+// The bot's managed role, requested by the invite link. View Channel and Send Messages are not
+// part of it; the bot gets them from @everyone or from channel overrides.
+export const INVITE_PERMISSIONS: readonly PermissionsString[] = [
+  "PrioritySpeaker",
+  "Connect",
+  "Speak",
+  "UseVAD",
+  "UseApplicationCommands",
+  "UseEmbeddedActivities",
+  "UseSoundboard",
+  "UseExternalSounds",
+  "BypassSlowmode",
+];
+
+export const INVITE_PERMISSIONS_INTEGER = new PermissionsBitField(INVITE_PERMISSIONS).bitfield;
+
+// Slash command replies and the queue manager go through the interaction webhook and need no
+// channel permission. Only the unprompted "now playing" announcements are channel messages.
 export const TEXT_CHANNEL_PERMISSIONS: readonly PermissionsString[] = [
   "ViewChannel",
   "SendMessages",
-  "EmbedLinks",
-  "ReadMessageHistory",
 ];
 
 export const VOICE_CHANNEL_PERMISSIONS: readonly PermissionsString[] = [
