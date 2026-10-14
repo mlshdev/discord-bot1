@@ -139,7 +139,7 @@ The image `ghcr.io/mlshdev/discord-bot1:latest` is public, so you don't need to 
 | Container exits with code `78`, log says `startup validation failed` | An ID points at the wrong place, or the bot is not on that server or cannot see a channel. Check step 3 and step 4. |
 | Container exits with code `1`, log says `discord login failed` | The token is wrong or was reset (step 1.3), or **Message Content Intent** is off (step 1.4). |
 | The bot is online but ignores commands | Commands only count in `TEXT_CHANNEL_ID` on `GUILD_ID`. Messages from other bots are ignored. |
-| `Missing Permissions` or `Missing Access` in the logs | The bot's role lacks one of the six permissions in that channel. Check the channel overrides from step 3.2. |
+| `missing discord permissions` in the logs, or an error with `code` `50013` (Missing Permissions) / `50001` (Missing Access) | The bot's role lacks a permission in that channel. The `missing` field names the exact permissions. Fix the channel overrides from step 3.2. The bot re-checks on its own and logs `discord permissions ok` once fixed. |
 | The bot does not join voice | It is missing Connect or View Channel on the voice channel, or the channel is full. |
 | `!add` answers "Sign in to confirm you're not a bot" | YouTube is blocking the host's IP address. See [YouTube cookies](#youtube-cookies-optional). |
 
@@ -165,6 +165,7 @@ All settings come from `.env`. `.env.example` is the template.
 | `HEALTH_PORT` | no | `8080` | Port for the `GET /healthz` endpoint |
 | `YTDLP_COOKIES_FILE` | no | — | Path to a Netscape `cookies.txt`, for when YouTube asks the bot to "confirm you're not a bot" |
 | `APP_ENV` | no | `production` | Environment name included in log lines |
+| `LOG_LEVEL` | no | `info` | Lowest severity written: `debug`, `info`, `warn` or `error`. `debug` adds voice and player state changes. |
 
 The bot checks the IDs at startup. If one is wrong it exits with code `78`.
 
@@ -181,7 +182,27 @@ The file is mounted read-only. The bot works on a private copy inside the contai
 ## Health and logs
 
 - `GET /healthz` on `HEALTH_PORT` returns `200 {"status":"ok"}` once the bot is logged in and has checked its channels. Before that it returns `503`. Docker's `HEALTHCHECK` uses this endpoint.
-- Logs are written as one JSON object per line to stdout/stderr. Read them with `docker compose logs`.
+- Logs are one JSON object per line: `info` and `debug` go to stdout, `warn` and `error` to stderr. Docker's `json-file` driver stores them (rotated at 10 MB). Read them with `docker compose logs -f discord-bot1`, or filter with `jq`, for example `docker compose logs --no-log-prefix discord-bot1 | jq 'select(.severity == "warn" or .severity == "error")'`.
+- Every line has `timestamp` (UTC), `severity`, `message`, `service` and `environment`, plus fields for the event. Errors carry an `error` object with `name`, `message` and `stack`, and depending on the error: Discord's `code`, `status`, `method` and `route`; Node's `code`, `syscall` and `path`; and a `cause` chain. Tokens in interaction and webhook routes are replaced with `[redacted]`.
+
+  ```json
+  {"timestamp":"2026-10-14T16:20:03.118Z","severity":"warn","message":"missing discord permissions","service":"discord-bot1","environment":"production","channel":"text","channelId":"123456789012345678","channelName":"music","missing":["EmbedLinks"]}
+  {"timestamp":"2026-10-14T16:21:40.502Z","severity":"error","message":"command failed","service":"discord-bot1","environment":"production","messageId":"123456789012345679","error":{"name":"DiscordAPIError[50013]","message":"Missing Permissions","code":50013,"status":403,"method":"POST","route":"/api/v10/channels/123456789012345678/messages","stack":"…"}}
+  ```
+
+- Main messages:
+
+  | Message | Severity | Meaning |
+  |---|---|---|
+  | `bot ready` | info | Logged in and the channels were validated |
+  | `discord permissions ok` / `missing discord permissions` | info / warn | Permission check of the command and voice channels. It runs at startup and again whenever a role or one of the two channels changes, and is logged only when the result changes. |
+  | `command received` / `command denied` | info | A command was accepted, or refused because the user lacks the DJ role |
+  | `menu interaction denied` | info | A queue-manager button was clicked by someone without the DJ role |
+  | `now playing` | info | A track started. Includes `inputType` and whether it was `transcoded`. |
+  | `track resolve failed` / `audio source failed` | warn | yt-dlp could not resolve or stream a video. The reason is included. |
+  | `voice connection failed` / `voice connection lost` | error / warn | The bot could not join voice, or lost the connection |
+  | `discord gateway disconnected` / `reconnecting` / `resumed` | warn / info | Gateway connection drops and recoveries, with the close code |
+  | `invalid configuration` / `startup validation failed` / `discord login failed` / `fatal startup error` | error | Startup failures. These exit with code 78, 78, 1 and 1. |
 
 ## Images
 

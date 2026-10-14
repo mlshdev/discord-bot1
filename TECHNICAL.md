@@ -41,7 +41,8 @@ src/
   menu.ts       !mn component UI (embed + select + buttons) and its collector
   format.ts     duration/markdown helpers
   health.ts     GET /healthz
-  logger.ts     JSON-lines logger
+  logger.ts     JSON-lines logger, LOG_LEVEL threshold, error serializer with token redaction
+  permissions.ts  required channel permissions and the pure missing-permission check
 test/           node:test unit tests for every pure module
 ```
 
@@ -107,6 +108,17 @@ Discord has two separate access mechanisms, and setup guides often mix them up. 
 - The `bot` scope is the only scope. `applications.commands` is not requested because there are no slash commands.
 
 See README → *Installation* for the step-by-step setup.
+
+## Logging
+
+- `createLogger({ service, environment, level, sink? })` writes one JSON object per line. `info` and `debug` go to stdout, `warn` and `error` to stderr. Entries below `LOG_LEVEL` are dropped. The `sink` parameter exists so tests can capture the output.
+- `serializeError` is applied to the `error` field of a log entry. Besides `name`, `message` and `stack`, it keeps the fields that explain a failure:
+  - `DiscordAPIError`: `code` (for example 50013 Missing Permissions, 50001 Missing Access), `status` and `method`. `url` is logged as `route`, the path only. `redactRoute` replaces the token segment of `/interactions/<id>/<token>` and `/webhooks/<id>/<token>` with `[redacted]`.
+  - Node `SystemError`: `code`, `syscall` and `path`, for example `ENOENT` when yt-dlp or ffmpeg is missing.
+  - `cause`, up to 3 levels deep.
+- Permission audit (`permissions.ts`): `missingPermissions` checks the bot's resolved channel permissions (`permissionsFor(me)`, where Administrator counts as everything) against `TEXT_CHANNEL_PERMISSIONS` and `VOICE_CHANNEL_PERMISSIONS`. It runs on `ClientReady` and again on `ChannelUpdate` for the two configured channels and on `GuildRole{Create,Update,Delete}`, all of which arrive with the `Guilds` intent. `auditKey` keeps the logs quiet: the result is logged only when it differs from the previous audit. A missing permission is a warning, not a failure, because it can be fixed while the bot runs.
+- The boot logger handles `invalid configuration` and any rejection escaping `main()` (`fatal startup error`), so even a crash before the configuration loads produces JSON instead of a raw Node stack trace.
+- At `debug` level, voice connection and audio player state transitions are logged, along with failures that are tolerated (typing indicator, menu edits, closed pipes).
 
 ## Container image
 

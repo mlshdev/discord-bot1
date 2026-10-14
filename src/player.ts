@@ -74,7 +74,10 @@ export class MusicPlayer extends EventEmitter<PlayerEvents> {
       this.#current = undefined;
       void this.#advance();
     });
-    this.#audioPlayer.on("stateChange", () => this.emit("change"));
+    this.#audioPlayer.on("stateChange", (from, to) => {
+      options.logger.debug("audio player state", { from: from.status, to: to.status });
+      this.emit("change");
+    });
     this.#audioPlayer.on("error", (error) => {
       const track = (error.resource as AudioResource<Track>).metadata;
       this.#options.logger.error("audio player error", { error, url: track.url });
@@ -280,6 +283,9 @@ export class MusicPlayer extends EventEmitter<PlayerEvents> {
     });
     this.#connection = connection;
     connection.on("error", (error) => logger.error("voice connection error", { error }));
+    connection.on("stateChange", (from, to) =>
+      logger.debug("voice connection state", { from: from.status, to: to.status }),
+    );
     connection.on(VoiceConnectionStatus.Disconnected, () => {
       Promise.race([
         entersState(connection, VoiceConnectionStatus.Signalling, RECONNECT_GRACE_MS),

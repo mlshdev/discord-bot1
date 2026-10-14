@@ -3,10 +3,13 @@ import {
   Client,
   Events,
   GatewayIntentBits,
+  type Guild,
   type GuildMember,
   type GuildTextBasedChannel,
   type Message,
+  type Role,
   type StringSelectMenuInteraction,
+  type VoiceBasedChannel,
 } from "discord.js";
 import { type Command, PRIVILEGED_COMMANDS, parseCommand } from "./commands.ts";
 import { type Config, ConfigError, loadConfig } from "./config.ts";
@@ -14,6 +17,13 @@ import { describeTrack } from "./format.ts";
 import { startHealthServer } from "./health.ts";
 import { createLogger, type Logger } from "./logger.ts";
 import { openMenu } from "./menu.ts";
+import {
+  auditKey,
+  type ChannelAudit,
+  missingPermissions,
+  TEXT_CHANNEL_PERMISSIONS,
+  VOICE_CHANNEL_PERMISSIONS,
+} from "./permissions.ts";
 import { MusicPlayer } from "./player.ts";
 import { QueueFullError } from "./queue.ts";
 import { parseYouTubeUrl } from "./youtube.ts";
@@ -48,7 +58,9 @@ async function handleAdd(
     await message.reply(`The queue is full (${runtime.config.maxQueueSize} tracks).`);
     return;
   }
-  await message.channel.sendTyping().catch(() => undefined);
+  await message.channel
+    .sendTyping()
+    .catch((error: unknown) => runtime.logger.debug("typing indicator failed", { error }));
   let info: Awaited<ReturnType<YtDlp["resolve"]>>;
   try {
     info = await runtime.ytDlp.resolve(url);
@@ -120,6 +132,12 @@ async function handleMessage(message: Message, runtime: Runtime): Promise<void> 
     return;
   }
   if (PRIVILEGED_COMMANDS.has(command.kind) && !hasDjRole(message.member, config)) {
+    runtime.logger.info("command denied", {
+      command: command.kind,
+      userId: message.author.id,
+      reason: "missing DJ role",
+      djRoleId: config.djRoleId,
+    });
     await message.reply(`⛔ This command requires the <@&${config.djRoleId}> role.`);
     return;
   }
@@ -127,17 +145,67 @@ async function handleMessage(message: Message, runtime: Runtime): Promise<void> 
   await dispatch(message, command, runtime);
 }
 
+async function auditChannels(
+  guild: Guild,
+  textChannel: GuildTextBasedChannel,
+  voiceChannel: VoiceBasedChannel,
+): Promise<ChannelAudit[]> {
+  const me = guild.members.me ?? (await guild.members.fetchMe());
+  return [
+    {
+      role: "text",
+      channelId: textChannel.id,
+      channelName: textChannel.name,
+      missing: missingPermissions(textChannel.permissionsFor(me), TEXT_CHANNEL_PERMISSIONS),
+    },
+    {
+      role: "voice",
+      channelId: voiceChannel.id,
+      channelName: voiceChannel.name,
+      missing: missingPermissions(voiceChannel.permissionsFor(me), VOICE_CHANNEL_PERMISSIONS),
+    },
+  ];
+}
+
+function reportAudits(audits: readonly ChannelAudit[], logger: Logger): void {
+  for (const audit of audits) {
+    if (audit.missing.length === 0) {
+      logger.info("discord permissions ok", {
+        channel: audit.role,
+        channelId: audit.channelId,
+        channelName: audit.channelName,
+      });
+    } else {
+      logger.warn("missing discord permissions", {
+        channel: audit.role,
+        channelId: audit.channelId,
+        channelName: audit.channelName,
+        missing: audit.missing,
+      });
+    }
+  }
+}
+
+// Used until the configuration is loaded, and for crashes that escape main().
+const bootLogger = createLogger({
+  service: SERVICE,
+  environment: process.env.APP_ENV ?? "production",
+  level: "info",
+});
+
 async function main(): Promise<void> {
   let config: Config;
   try {
     config = loadConfig(process.env);
   } catch (error) {
-    createLogger(SERVICE, process.env.APP_ENV ?? "production").error("invalid configuration", {
-      error,
-    });
+    bootLogger.error("invalid configuration", { error });
     process.exit(error instanceof ConfigError ? 78 : 1);
   }
-  const logger = createLogger(SERVICE, config.environment);
+  const logger = createLogger({
+    service: SERVICE,
+    environment: config.environment,
+    level: config.logLevel,
+  });
 
   const ytDlp = await YtDlp.create({
     ytDlpPath: config.ytDlpPath,
@@ -197,6 +265,36 @@ async function main(): Promise<void> {
         textChannel: textChannel.name,
         voiceChannel: voiceChannel.name,
       });
+
+      // Re-audited whenever a role or one of the two channels changes; logged only on a change.
+      let lastAudit = "";
+      const reaudit = async (): Promise<void> => {
+        try {
+          const audits = await auditChannels(guild, announceChannel, voiceChannel);
+          const key = auditKey(audits);
+          if (key !== lastAudit) {
+            lastAudit = key;
+            reportAudits(audits, logger);
+          }
+        } catch (error) {
+          logger.warn("permission audit failed", { error });
+        }
+      };
+      await reaudit();
+      const watchedChannels = new Set([textChannel.id, voiceChannel.id]);
+      client.on(Events.ChannelUpdate, (_old, updated) => {
+        if (watchedChannels.has(updated.id)) {
+          void reaudit();
+        }
+      });
+      const onRoleChange = (role: Role): void => {
+        if (role.guild.id === guild.id) {
+          void reaudit();
+        }
+      };
+      client.on(Events.GuildRoleCreate, onRoleChange);
+      client.on(Events.GuildRoleUpdate, (_old, updated) => onRoleChange(updated));
+      client.on(Events.GuildRoleDelete, onRoleChange);
     } catch (error) {
       logger.error("startup validation failed", { error });
       await client.destroy();
@@ -214,6 +312,19 @@ async function main(): Promise<void> {
   });
   client.on(Events.Error, (error) => logger.error("discord client error", { error }));
   client.on(Events.Warn, (warning) => logger.warn("discord client warning", { warning }));
+  client.on(Events.ShardDisconnect, (event, shardId) =>
+    logger.warn("discord gateway disconnected", { shardId, closeCode: event.code }),
+  );
+  client.on(Events.ShardReconnecting, (shardId) =>
+    logger.info("discord gateway reconnecting", { shardId }),
+  );
+  client.on(Events.ShardResume, (shardId, replayedEvents) =>
+    logger.info("discord gateway resumed", { shardId, replayedEvents }),
+  );
+  client.on(Events.ShardError, (error, shardId) =>
+    logger.error("discord gateway error", { error, shardId }),
+  );
+  client.on(Events.Invalidated, () => logger.error("discord session invalidated"));
 
   let shuttingDown = false;
   const shutdown = async (signal: NodeJS.Signals): Promise<void> => {
@@ -241,4 +352,9 @@ async function main(): Promise<void> {
   }
 }
 
-await main();
+try {
+  await main();
+} catch (error) {
+  bootLogger.error("fatal startup error", { error });
+  process.exit(1);
+}

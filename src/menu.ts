@@ -287,6 +287,11 @@ export async function openMenu(message: Message<true>, context: MenuContext): Pr
     const component = interaction as ButtonInteraction | StringSelectMenuInteraction;
     try {
       if (!isAuthorized(component)) {
+        logger.info("menu interaction denied", {
+          customId: component.customId,
+          userId: component.user.id,
+          reason: "missing DJ role",
+        });
         await component.reply({
           content: "⛔ You are not allowed to manage the queue.",
           flags: MessageFlags.Ephemeral,
