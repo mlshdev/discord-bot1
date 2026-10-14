@@ -1,15 +1,9 @@
 # syntax=docker/dockerfile:1
 
-FROM docker.io/oven/bun:1.4.3-slim AS bun
-
-# yt-dlp's recommended JavaScript runtime for YouTube challenge solving (EJS).
-FROM docker.io/denoland/deno:bin-2.9.7 AS deno
-
-FROM docker.io/library/node:26-trixie-slim AS deps
-COPY --from=bun /usr/local/bin/bun /usr/local/bin/bun
+FROM docker.io/library/node:24-trixie-slim AS deps
 WORKDIR /app
-COPY package.json bun.lock ./
-RUN bun install --frozen-lockfile --production --ignore-scripts
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund
 
 FROM docker.io/library/debian:trixie-slim AS ytdlp
 # Bumped automatically by .github/workflows/ytdlp-release.yml on every upstream release.
@@ -35,13 +29,12 @@ RUN set -eu; \
     chmod -R a+rX,go-w /opt/yt-dlp; \
     test "$(/opt/yt-dlp/yt-dlp --version)" = "${YT_DLP_VERSION}"
 
-FROM docker.io/library/node:26-trixie-slim AS runtime
+FROM docker.io/library/node:24-trixie-slim AS runtime
 ARG YT_DLP_VERSION=2026.08.19
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates ffmpeg \
  && rm -rf /var/lib/apt/lists/*
 COPY --from=ytdlp /opt/yt-dlp /opt/yt-dlp
-COPY --from=deno /deno /usr/local/bin/deno
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY package.json ./
@@ -49,9 +42,6 @@ COPY src ./src
 ENV NODE_ENV=production \
     PATH=/opt/yt-dlp:${PATH} \
     XDG_CACHE_HOME=/tmp/.cache \
-    DENO_DIR=/tmp/.cache/deno \
-    DENO_NO_UPDATE_CHECK=1 \
-    DENO_PATH=/usr/local/bin/deno \
     HEALTH_PORT=8080
 LABEL org.opencontainers.image.title="discord-bot1" \
       org.opencontainers.image.description="YouTube-only Discord music bot backed by yt-dlp" \

@@ -5,13 +5,25 @@
 | Concern | Choice | Why |
 |---|---|---|
 | Language | TypeScript, `strict` plus `exactOptionalPropertyTypes` and `noUncheckedIndexedAccess` | Static typing everywhere |
-| Runtime | **Node.js 26**, which runs `.ts` directly through built-in type stripping | `@discordjs/voice` targets Node, and the DAVE end-to-end voice encryption that Discord has required since 2026-03-01 depends on the native `@snazzah/davey` addon. Neither is validated on Bun, and voice is the critical path. |
-| Package manager and scripts | **Bun** (`bun install`, `bun run`, `bun.lock`) | Fast installs. Dependabot's `bun` ecosystem tracks the lockfile. |
+| Runtime | **Node.js 24 LTS** ("Krypton"), which runs `.ts` directly through built-in type stripping | See [Why Node.js 24 and not Bun](#why-nodejs-24-and-not-bun). One Node binary runs the bot, the tests and yt-dlp's challenge solver. |
+| Package manager and scripts | **npm** (`npm ci`, `npm run`, `package-lock.json`), bundled with Node | No second toolchain. Dependabot's `npm` ecosystem tracks the lockfile. |
 | Lint and format | Biome | Replaces ESLint and Prettier |
 | Tests | `node:test`, run on Node | Tests run on the same runtime as production |
 | Discord | `discord.js` 14, `@discordjs/voice` 0.19 | |
 | Media | yt-dlp (official PyInstaller *onedir* build), audio-only; Opus passthrough, with ffmpeg (Debian) as fallback only | Avoids re-encoding wherever possible |
-| yt-dlp JS runtime | **Deno** (`denoland/deno:bin-*`) | yt-dlp's recommended and only default-enabled runtime. Its challenge solver runs with no Deno permissions; yt-dlp considers Node and Bun insecure for this. |
+| yt-dlp JS runtime | **The image's own Node.js**, under Node's permission model | yt-dlp starts the solver as `node --permission -`, which denies filesystem, network, child-process and worker access. No extra runtime is shipped. |
+
+The supported Node line is recorded in `.node-version` (used by CI) and `engines.node` in `package.json`.
+
+### Why Node.js 24 and not Bun
+
+The code itself is plain Node: `node:child_process` (spawning yt-dlp and ffmpeg), `node:http` (health), `node:events`, `node:fs/promises`, `node:stream`, and `node:test` for tests. It uses no Node-only syntax and no API newer than Node 24. The deciding factors are the dependencies and yt-dlp:
+
+- **Voice.** `@discordjs/voice` is built and tested against Node. It uses UDP sockets (`node:dgram`), Node's native `aes-256-gcm`, and the N-API addon `@snazzah/davey` for DAVE, the end-to-end voice encryption Discord has required since 2026-03-01. Voice is the critical path, and none of this is validated on Bun.
+- **yt-dlp has dropped modern Bun.** Since its 2026 announcement ([yt-dlp#16766](https://github.com/yt-dlp/yt-dlp/issues/16766)), yt-dlp supports Bun only from 1.2.11 to **1.3.14**, the last release built from the original Zig codebase. Newer Bun versions, including every current one, get a "not supported, do not report bugs" warning. yt-dlp also notes that Bun has no sandboxing options.
+- **Node sandboxes the solver.** yt-dlp runs Node (≥ 22, preference 900) as `node --permission -`. This lets the image drop Deno completely without weakening the solver's isolation, and saves about 110 MB.
+
+Node 24 is an LTS line, supported until 2028-04-30, and the image's Node binary serves as the bot runtime and the EJS runtime at the same time.
 
 There is no build step. Node strips the types at load time, so the source must stay within erasable syntax (`erasableSyntaxOnly`): no `enum`, no `namespace`, no constructor parameter properties. Relative imports keep their `.ts` extension (`allowImportingTsExtensions`).
 
@@ -57,10 +69,11 @@ test/           node:test unit tests for every pure module
    - In both paths `@discordjs/voice` only demuxes, so no Opus encoder package (`@discordjs/opus` or `opusscript`) is needed.
    - Transport encryption uses Node's native `aes-256-gcm`.
    - DAVE is handled by `@snazzah/davey`.
-5. yt-dlp needs a JavaScript runtime to solve YouTube's challenges (EJS). The bot passes `--no-js-runtimes --js-runtimes deno[:$DENO_PATH]`, so Deno is the only runtime yt-dlp can use. It can never silently fall back to Node.
-   - yt-dlp starts Deno with `--no-prompt --no-remote --no-npm --no-config` and grants no permissions (no network, filesystem or env access).
-   - The official onedir build bundles `yt_dlp_ejs`, so no remote components are fetched.
-   - Deno's analysis cache lives in `DENO_DIR=/tmp/.cache/deno`, on the tmpfs.
+5. yt-dlp needs a JavaScript runtime to solve YouTube's challenges (EJS). The bot passes `--no-js-runtimes --js-runtimes node:<process.execPath>`, so the only runtime yt-dlp can use is the exact Node binary running the bot. There is no `PATH` lookup and nothing to configure.
+   - `yt_dlp_ejs` holds only the solver *scripts*. It is not a runtime, so a JavaScript engine is still required.
+   - The official onedir build bundles `yt_dlp_ejs` (0.8.0 in yt-dlp 2026.08.19), so the scripts come from the Python package, `ejs:github` and `ejs:npm` stay disabled, and nothing is downloaded at solve time.
+   - yt-dlp pipes the scripts to `node --permission -`. Under the permission model the solver has no filesystem, network, child-process, worker or native-addon access.
+   - Verified in the hardened container. yt-dlp's debug output lists the challenge providers as `bun (unavailable), deno (unavailable), node, quickjs (unavailable)`, shows `Running node: /usr/local/bin/node --permission -` with the solver lib/core v0.8.0 taken from the Python package, and then picks format 251 (Opus).
 
 ### Player invariants (`player.ts`)
 
@@ -78,38 +91,53 @@ test/           node:test unit tests for every pure module
 - Every interaction re-checks the DJ role. Unauthorised clicks get an ephemeral reply.
 - The menu subscribes to `MusicPlayer`'s `change` event and re-renders, debounced to 1 s. The collector ends after 5 minutes idle, and then the components are removed.
 
+## Discord contract: intents vs. permissions
+
+Discord has two separate access mechanisms, and setup guides often mix them up. "Message Content" is a **gateway intent**, not a permission.
+
+| Mechanism | Where it is set | What this bot uses |
+|---|---|---|
+| Gateway intents | `Client({ intents })` in `index.ts`. Privileged ones must also be switched on under **Developer Portal → Bot → Privileged Gateway Intents**. | `Guilds`, `GuildVoiceStates`, `GuildMessages`, and the privileged **`MessageContent`** (`1 << 15`) |
+| Permissions | The invite link (`permissions=` bitfield), the bot's role and channel overrides | View Channels, Send Messages, Embed Links, Read Message History, Connect, Speak = `3230720` |
+
+- `MessageContent` is needed because the bot reads plain-text prefix commands. Discord only exempts DMs, mentions of the bot and replies to the bot's own messages. Without the intent, `message.content` is empty for ordinary guild messages.
+- Requesting a privileged intent that the portal has not enabled makes Discord close the gateway with `4014`. discord.js then rejects `login()` (`Used disallowed intents` / `Privileged intent provided is not enabled or whitelisted`), and the bot logs `discord login failed` and exits with code 1.
+- Apps with fewer than 10,000 users can turn the switch on themselves. Above that, Discord requires a privileged-intent review, which a single-guild bot never reaches.
+- No `GuildMembers` intent is needed. `message.member` and `interaction.member` arrive with the event, and `roles.cache` is filled from them, so the DJ-role check works without it.
+- The `bot` scope is the only scope. `applications.commands` is not requested because there are no slash commands.
+
+See README → *Installation* for the step-by-step setup.
+
 ## Container image
 
-`Dockerfile` has four stages:
+`Dockerfile` has three stages:
 
 | Stage | Base | Purpose |
 |---|---|---|
-| `bun` | `oven/bun:1.4.3-slim` | Provides the `bun` binary only |
-| `deno` | `denoland/deno:bin-2.9.7` | Provides the `/deno` binary only. Dependabot's `docker` ecosystem tracks this tag. |
-| `deps` | `node:26-trixie-slim` | `bun install --frozen-lockfile --production --ignore-scripts`. Runs per native arch, so the right `@snazzah/davey-linux-*` prebuild is chosen. |
+| `deps` | `node:24-trixie-slim` | `npm ci --omit=dev --ignore-scripts`. Runs per native arch, so npm installs the right `@snazzah/davey-linux-*` optional prebuild. |
 | `ytdlp` | `debian:trixie-slim` | Downloads `yt-dlp_linux[_aarch64].zip` for `YT_DLP_VERSION`, checks it against the release's `SHA2-256SUMS`, unpacks it to `/opt/yt-dlp`, and asserts `--version` |
-| `runtime` | `node:26-trixie-slim` | Adds Debian `ffmpeg` (fallback only) and copies in yt-dlp, `deno`, `node_modules` and `src`. Runs as `1000:1000` with a `HEALTHCHECK`. |
+| `runtime` | `node:24-trixie-slim` | Adds Debian `ffmpeg` (fallback only) and copies in yt-dlp, `node_modules` and `src`. Runs as `1000:1000` with a `HEALTHCHECK`. |
 
 The onedir yt-dlp build is used instead of the single-file binary on purpose. The single-file binary unpacks itself into `/tmp` on every start, which is slower and needs an executable `/tmp`.
 
-Image size is about 1.2 GB. Debian's `ffmpeg` and its libraries account for roughly 420 MB and Deno for about 110 MB. `dive --ci` passes.
+Image size is about 1.1 GB, of which Debian's `ffmpeg` and its libraries account for roughly 420 MB. `dive --ci` passes.
 
 ### Runtime hardening (verified locally with OrbStack)
 
-- Capability probe: `cap_drop: [ALL]` with no `cap_add`, plus `read_only: true` and `no-new-privileges`. Under these settings, metadata resolution with Deno solving the challenges, Opus passthrough, the ffmpeg fallback, the health server and the config/login error paths all ran with **no permission errors**, so no capability is added back.
-- The only writable path is the `/tmp` tmpfs. It holds yt-dlp's cache (`XDG_CACHE_HOME=/tmp/.cache`), Deno's cache (`DENO_DIR`) and the private copy of the cookies file. yt-dlp rewrites its cookie jar on exit, so it cannot use the read-only mount directly.
+- Capability probe: `cap_drop: [ALL]` with no `cap_add`, plus `read_only: true` and `no-new-privileges`. Under these settings, metadata resolution with Node solving the challenges under `--permission`, Opus passthrough, the ffmpeg fallback, the health server and the config/login error paths all ran with **no permission errors**, so no capability is added back.
+- The only writable path is the `/tmp` tmpfs. It holds yt-dlp's cache (`XDG_CACHE_HOME=/tmp/.cache`) and the private copy of the cookies file. yt-dlp rewrites its cookie jar on exit, so it cannot use the read-only mount directly.
 - `init: true` gives the container a real PID 1 that reaps the yt-dlp and ffmpeg child processes.
 
 ## CI/CD
 
 | Workflow | Trigger | What it does |
 |---|---|---|
-| `ci.yml` | push to `main`, PRs | On `ubuntu-slim`: `biome ci`, `tsc`, `node --test` |
-| `docker.yml` | every PR; push to `main` touching image inputs; Mon/Thu 03:00 UTC; `workflow_dispatch` | Native matrix (`ubuntu-26.04-arm` → `linux/arm64`, `ubuntu-26.04` → `linux/amd64`), no QEMU. Each arch builds with `--load` and is validated in a hardened container: yt-dlp version matches the pin, ffmpeg has libopus, yt-dlp detects Deno and the bundled EJS solver, Deno runs under the hardened settings, discord.js/voice/davey import, and a missing config exits 78. On `main` it then pushes by digest. A merge job builds the manifest list tagged `latest`, `ytdlp-<ver>` and `sha-<sha>`. Scheduled runs use `no-cache` and `pull` for a clean rebuild. |
+| `ci.yml` | push to `main`, PRs | On `ubuntu-slim` with Node from `.node-version`: `npm ci`, `biome ci`, `tsc`, `node --test` |
+| `docker.yml` | every PR; push to `main` touching image inputs; Mon/Thu 03:00 UTC; `workflow_dispatch` | Native matrix (`ubuntu-26.04-arm` → `linux/arm64`, `ubuntu-26.04` → `linux/amd64`), no QEMU. Each arch builds with `--load` and is validated in a hardened container: yt-dlp version matches the pin, ffmpeg has libopus, yt-dlp detects Node 24 and the bundled EJS solver, `node --permission` runs under the hardened settings, discord.js/voice/davey import, and a missing config exits 78. On `main` it then pushes by digest. A merge job builds the manifest list tagged `latest`, `ytdlp-<ver>` and `sha-<sha>`. Scheduled runs use `no-cache` and `pull` for a clean rebuild. |
 | `ytdlp-release.yml` | every 30 min; `workflow_dispatch` | Polls `yt-dlp/yt-dlp` for its latest release. When the release is new and its Linux assets plus `SHA2-256SUMS` are uploaded, it rewrites `ARG YT_DLP_VERSION` in the `Dockerfile`, and pushes the commit to `main` over SSH with a write deploy key (secret `YTDLP_BUMP_DEPLOY_KEY`). That push triggers `docker.yml`. |
 | `dependabot-automerge.yml` | Dependabot PRs | Turns on auto-merge, which waits for the required checks |
 
-`.github/dependabot.yml` covers the `docker`, `github-actions` and `bun` ecosystems on Mon/Thu 00:00 UTC.
+`.github/dependabot.yml` covers the `docker`, `github-actions` and `npm` ecosystems on Mon/Thu 00:00 UTC. Node is pinned to the 24 LTS line, so two major updates are ignored on purpose: `node` in `docker` and `@types/node` in `npm`. Without those rules, auto-merge would move the bot to the next Node major without anyone looking. Minor and patch updates still flow in. Moving to the next LTS is a deliberate change that touches `.node-version`, `engines.node`, both `FROM` lines, `@types/node`, the `node-24\.` check in `docker.yml`, and these ignore rules.
 
 ### Why poll, and why a deploy key
 
@@ -127,15 +155,24 @@ Image size is about 1.2 GB. Debian's `ffmpeg` and its libraries account for roug
 
 ## Development
 
+Use Node 24 (`brew install node@24`, or any version manager that reads `.node-version`). Newer Node majors also run the code, but CI and the image use 24.
+
 ```zsh
-bun install
+npm ci
 cp .env.example .env            # fill in real IDs
-bun run dev                     # node --watch --env-file=.env src/index.ts
-bun run check                   # biome + tsc + tests
-bun run format                  # biome --write
+npm run dev                     # node --watch --env-file=.env src/index.ts
+npm run check                   # biome + tsc + tests
+npm run format                  # biome --write
 ```
 
-To run locally you need `yt-dlp`, `deno` and `ffmpeg` (with libopus) on `PATH`. You can also point `YTDLP_PATH`, `DENO_PATH` and `FFMPEG_PATH` at them.
+To run locally you need `yt-dlp` and `ffmpeg` (with libopus) on `PATH`, or `YTDLP_PATH` and `FFMPEG_PATH` pointing at them. yt-dlp needs either `yt_dlp_ejs` installed or the official standalone build, which bundles it. The Node binary running the bot solves the challenges, so it must be version 22 or newer.
+
+Without a local Node 24, run the checks in the same image CI uses:
+
+```zsh
+docker run --rm --user 1000:1000 -e npm_config_cache=/tmp/npm -v "$PWD:/app" -w /app \
+  docker.io/library/node:24-trixie-slim sh -c 'npm ci && npm run check'
+```
 
 Local image pre-flight (OrbStack, native arm64):
 

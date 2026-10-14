@@ -48,7 +48,7 @@ export type SourceOutcome =
 export interface YtDlpOptions {
   readonly ytDlpPath: string;
   readonly ffmpegPath: string;
-  readonly denoPath: string | undefined;
+  readonly nodePath: string;
   readonly cookiesFile: string | undefined;
   readonly audioBitrateKbps: number;
   readonly logger: Logger;
@@ -159,15 +159,16 @@ export class YtDlp {
   }
 
   #baseArgs(): string[] {
-    const { denoPath } = this.#options;
     const args = [
       "--ignore-config",
       "--no-playlist",
       "--no-warnings",
       "--no-progress",
+      // Only the Node binary running the bot may solve YouTube's JS challenges; yt-dlp starts it
+      // with --permission, so the solver has no filesystem, network or child-process access.
       "--no-js-runtimes",
       "--js-runtimes",
-      denoPath === undefined ? "deno" : `deno:${denoPath}`,
+      `node:${this.#options.nodePath}`,
       "--format",
       AUDIO_FORMAT,
     ];
