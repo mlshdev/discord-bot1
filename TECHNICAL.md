@@ -33,12 +33,12 @@ There is no build step. Node strips the types at load time, so the source must s
 src/
   index.ts      entrypoint: config, Discord client, message routing, role checks, shutdown
   config.ts     typed env parsing (ConfigError → exit 78)
-  commands.ts   prefix parser → discriminated union Command
+  commands.ts   single "!" prefix (PREFIX) parser → discriminated union Command
   youtube.ts    URL allowlist → canonical https://www.youtube.com/watch?v=<id>
   ytdlp.ts      yt-dlp metadata resolution + audio source (Opus passthrough, ffmpeg fallback)
   queue.ts      pure TrackQueue (enqueue/remove/move/promote/shuffle)
   player.ts     MusicPlayer: voice connection, AudioPlayer, queue advancement
-  menu.ts       !!mn component UI (embed + select + buttons) and its collector
+  menu.ts       !mn component UI (embed + select + buttons) and its collector
   format.ts     duration/markdown helpers
   health.ts     GET /healthz
   logger.ts     JSON-lines logger
