@@ -7,7 +7,7 @@ on:
       - "Dockerfile"
       - ".dockerignore"
       - "package.json"
-      - "bun.lock"
+      - "package-lock.json"
       - "src/**"
       - ".github/workflows/docker.yml"
   # Unfiltered so the per-arch builds can be required status checks on every PR.
@@ -116,14 +116,15 @@ jobs:
           encoders="$("${hardened[@]}" discord-bot1:validate ffmpeg -hide_banner -encoders)"
           grep -q libopus <<<"${encoders}"
 
-          # yt-dlp must detect Deno and the bundled EJS solver (an unreachable URL keeps this offline).
-          debug="$("${hardened[@]}" discord-bot1:validate yt-dlp -v --no-js-runtimes --js-runtimes deno \
-            --simulate "https://example.invalid/" 2>&1 || true)"
-          grep -Eq '^\[debug\] JS runtimes: .*deno-' <<<"${debug}"
+          # yt-dlp must detect the image's Node and the bundled EJS solver (an unreachable URL keeps this offline).
+          debug="$("${hardened[@]}" discord-bot1:validate yt-dlp -v --no-js-runtimes \
+            --js-runtimes node:/usr/local/bin/node --simulate "https://example.invalid/" 2>&1 || true)"
+          grep -Eq '^\[debug\] JS runtimes: .*node-24\.' <<<"${debug}"
           grep -q 'yt_dlp_ejs-' <<<"${debug}"
-          echo 'console.log("deno ok")' | docker run --rm -i --read-only --cap-drop ALL \
+          # yt-dlp runs the solver as `node --permission -`; it must work under the hardened settings.
+          echo 'console.log("node ok")' | docker run --rm -i --read-only --cap-drop ALL \
             --security-opt no-new-privileges:true --tmpfs "/tmp:rw,nosuid,nodev,mode=1777" \
-            --user 1000:1000 discord-bot1:validate deno run --ext=js --no-prompt --no-remote --no-config --no-npm -
+            --user 1000:1000 discord-bot1:validate node --permission -
 
           "${hardened[@]}" --workdir /app discord-bot1:validate node --input-type=module -e \
             "await import('discord.js'); const v = await import('@discordjs/voice'); console.log(v.generateDependencyReport());"

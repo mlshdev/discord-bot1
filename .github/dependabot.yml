@@ -6,15 +6,19 @@ updates:
     labels: ["dependencies", "docker"]
     commit-message: {prefix: "deps", include: "scope"}
     groups: {docker-images: {patterns: ["*"]}}
+    # The runtime is pinned to the Node 24 LTS line; minor and patch releases still flow in.
+    ignore: [{dependency-name: "node", update-types: ["version-update:semver-major"]}]
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule: {interval: "cron", cronjob: "0 0 * * 1,4", timezone: "UTC"}
     labels: ["dependencies", "github-actions"]
     commit-message: {prefix: "deps", include: "scope"}
     groups: {actions: {patterns: ["*"]}}
-  - package-ecosystem: "bun"
+  - package-ecosystem: "npm"
     directory: "/"
     schedule: {interval: "cron", cronjob: "0 0 * * 1,4", timezone: "UTC"}
-    labels: ["dependencies", "javascript", "bun"]
+    labels: ["dependencies", "javascript"]
     commit-message: {prefix: "deps", include: "scope"}
-    groups: {bun-deps: {patterns: ["*"]}}
+    groups: {npm-deps: {patterns: ["*"]}}
+    # Typings must match the Node 24 runtime.
+    ignore: [{dependency-name: "@types/node", update-types: ["version-update:semver-major"]}]

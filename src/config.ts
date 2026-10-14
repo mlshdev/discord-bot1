@@ -9,7 +9,6 @@ export interface Config {
   readonly healthPort: number;
   readonly ytDlpPath: string;
   readonly ffmpegPath: string;
-  readonly denoPath: string | undefined;
   readonly ytDlpCookiesFile: string | undefined;
   readonly audioBitrateKbps: number;
   readonly environment: string;
@@ -71,7 +70,6 @@ export function loadConfig(env: Env): Config {
     healthPort: integer(env, "HEALTH_PORT", 8080, 1, 65_535),
     ytDlpPath: optional(env, "YTDLP_PATH") ?? "yt-dlp",
     ffmpegPath: optional(env, "FFMPEG_PATH") ?? "ffmpeg",
-    denoPath: optional(env, "DENO_PATH"),
     ytDlpCookiesFile: optional(env, "YTDLP_COOKIES_FILE"),
     audioBitrateKbps: integer(env, "AUDIO_BITRATE_KBPS", 128, 16, 510),
     environment: optional(env, "APP_ENV") ?? "production",

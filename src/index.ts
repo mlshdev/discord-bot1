@@ -142,7 +142,7 @@ async function main(): Promise<void> {
   const ytDlp = await YtDlp.create({
     ytDlpPath: config.ytDlpPath,
     ffmpegPath: config.ffmpegPath,
-    denoPath: config.denoPath,
+    nodePath: process.execPath,
     cookiesFile: config.ytDlpCookiesFile,
     audioBitrateKbps: config.audioBitrateKbps,
     logger,

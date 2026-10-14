@@ -19,7 +19,7 @@ discord-bot1/config/cookies.txt
 .env.*
 !.env.example
 
-# Node / Bun
+# Node
 node_modules/
 *.tsbuildinfo
 
