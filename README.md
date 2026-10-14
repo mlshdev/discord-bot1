@@ -15,7 +15,14 @@ All commands only work in the text channel set by `TEXT_CHANNEL_ID` on the serve
 | `!mn` | `DJ_ROLE_ID` only | Opens the interactive queue manager. |
 | `!won` | `DJ_ROLE_ID` only | Stops playback, clears the queue and leaves the voice channel. |
 
-Accepted links: `youtube.com/watch?v=…`, `youtu.be/…`, `music.youtube.com/watch?v=…`, `/shorts/…`, `/live/…` (finished streams only), `/embed/…`. Playlist parameters are ignored and only the linked video is added. Live streams, premieres and non-YouTube links are rejected.
+Accepted links, over `https://` or `http://`:
+
+| Host | Paths |
+|---|---|
+| `youtube.com`, `www.youtube.com`, `m.youtube.com` (mobile browser), `music.youtube.com` | `/watch?v=…`, `/shorts/…`, `/live/…` (finished streams only), `/embed/…`, `/v/…` |
+| `youtu.be`, `www.youtu.be` (share links) | `/…` |
+
+Extra parameters such as `&t=42s`, `?si=…` and `&list=…` are ignored, and only the linked video is added, never a playlist. Live streams, premieres and non-YouTube links are rejected.
 
 ### Queue manager (`!mn`)
 
