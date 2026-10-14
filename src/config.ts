@@ -1,3 +1,5 @@
+import { isLogLevel, type LogLevel } from "./logger.ts";
+
 export interface Config {
   readonly discordToken: string;
   readonly guildId: string;
@@ -12,6 +14,7 @@ export interface Config {
   readonly ytDlpCookiesFile: string | undefined;
   readonly audioBitrateKbps: number;
   readonly environment: string;
+  readonly logLevel: LogLevel;
 }
 
 export class ConfigError extends Error {
@@ -58,6 +61,14 @@ function integer(env: Env, key: string, fallback: number, min: number, max: numb
   return value;
 }
 
+function logLevel(env: Env): LogLevel {
+  const raw = optional(env, "LOG_LEVEL")?.toLowerCase() ?? "info";
+  if (!isLogLevel(raw)) {
+    throw new ConfigError(`LOG_LEVEL must be one of debug, info, warn, error, got "${raw}"`);
+  }
+  return raw;
+}
+
 export function loadConfig(env: Env): Config {
   return {
     discordToken: required(env, "DISCORD_TOKEN"),
@@ -73,5 +84,6 @@ export function loadConfig(env: Env): Config {
     ytDlpCookiesFile: optional(env, "YTDLP_COOKIES_FILE"),
     audioBitrateKbps: integer(env, "AUDIO_BITRATE_KBPS", 128, 16, 510),
     environment: optional(env, "APP_ENV") ?? "production",
+    logLevel: logLevel(env),
   };
 }
