@@ -122,13 +122,13 @@ If the bot was added earlier with the old link (`scope=bot`, `permissions=323072
 mkdir -p ~/discord-bot1 && cd ~/discord-bot1
 curl -fsSLO https://raw.githubusercontent.com/mlshdev/discord-bot1/main/compose.yml
 curl -fsSL -o .env https://raw.githubusercontent.com/mlshdev/discord-bot1/main/.env.example
-mkdir -p discord-bot1/config discord-bot1/data
-sudo chown 1000:1000 discord-bot1/data
+touch state.json
+sudo chown 1000:1000 state.json && sudo chmod 600 state.json
 chmod 600 .env
 "${EDITOR:-nano}" .env
 ```
 
-Fill in `DISCORD_TOKEN` and the four IDs. Every variable is described in [Configuration](#configuration). Put the exported cookies at `discord-bot1/config/cookies.txt` as described in [YouTube cookies](#youtube-cookies). Then start the bot:
+Fill in `DISCORD_TOKEN` and the four IDs. Every variable is described in [Configuration](#configuration). Put the exported `cookies.txt` next to `compose.yml` as described in [YouTube cookies](#youtube-cookies). Both files must exist before the first start: Docker turns a missing bind-mount source into an empty directory. Then start the bot:
 
 ```sh
 docker compose up -d
@@ -147,7 +147,7 @@ The image `ghcr.io/mlshdev/discord-bot1:latest` is public, so you don't need to 
 
 | Symptom | Cause and fix |
 |---|---|
-| Container exits with code `78`, log says `invalid youtube cookies` | `discord-bot1/config/cookies.txt` is missing, unreadable, malformed, signed out or expired. The `error.message` names the exact problem. Fix it as described in [YouTube cookies](#youtube-cookies). |
+| Container exits with code `78`, log says `invalid youtube cookies` | `cookies.txt` next to `compose.yml` is missing (Docker then creates a directory with that name: `sudo rm -r cookies.txt` and put the file there), unreadable, malformed, signed out or expired. The `error.message` names the exact problem. Fix it as described in [YouTube cookies](#youtube-cookies). |
 | Container exits with code `78`, log says `invalid configuration` | A required variable is missing, an ID is not a 17–20 digit number, or a comma list has an empty entry (`a,,b` or a trailing comma). The message names the variable. Fix `.env`. |
 | `/add` answers "Join one of … first" | Several voice channels are configured and you are in none of them. Join one, then `/add` again. |
 | Container exits with code `78`, log says `startup validation failed` | An ID points at the wrong place, or the bot is not on that server or cannot see a channel. Check step 3 and step 4. If the error has `code` `50001` and a route ending in `/commands`, the bot was invited without the `applications.commands` scope: authorise the link from step 2 again. |
@@ -158,13 +158,13 @@ The image `ghcr.io/mlshdev/discord-bot1:latest` is public, so you don't need to 
 | `missing discord permissions` in the logs, or `failed to send announcement` with `code` `50013` (Missing Permissions) / `50001` (Missing Access) | The bot lacks a permission in that channel. The `missing` field names the exact permissions. Fix the channel overrides from step 3.2. The bot re-checks on its own and logs `discord permissions ok` once fixed. Commands keep working meanwhile; only the "now playing" announcements are lost. |
 | The bot does not join voice | It is missing Connect or View Channel on the voice channel, or the channel is full. |
 | `/add` answers with error code `E201` or `E210` | YouTube no longer accepts the cookies. Look for `yt-dlp warning` lines in the logs: "cookies are no longer valid" means they were rotated. Export fresh ones as described in [YouTube cookies](#youtube-cookies) and run `docker compose up -d --force-recreate`. |
-| The volume resets to 100 after a restart, logs show `could not save bot state` (`E501`) | `discord-bot1/data` is not writable by UID 1000, usually because Docker created it as root. Run `sudo chown 1000:1000 discord-bot1/data`, then `/vol` again. |
-| Upgraded from an older `compose.yml` and the volume does not survive `docker compose down` | Download the current `compose.yml`, which mounts `discord-bot1/data`. Without that mount the state lives in an anonymous Docker volume. It survives restarts and `up --force-recreate`, but `down -v` deletes it. |
+| The volume resets to 100 after a restart, logs show `could not save bot state` (`E501`) | `state.json` is not writable by UID 1000. Run `sudo chown 1000:1000 state.json`, then `/vol` again. |
+| Logs show `bot state path is a directory` (`E501`) | `state.json` did not exist when the container was created, so Docker created a directory with that name. Run `docker compose down && sudo rm -r state.json && touch state.json && sudo chown 1000:1000 state.json && docker compose up -d`. |
 | `youtube cookies file has unreadable lines` in the logs | yt-dlp skips those lines. Each line needs 7 fields separated by **tabs**. Copy-paste through a terminal or chat often turns tabs into spaces, so copy the file itself instead (`scp`). |
 
 ### Update and uninstall
 
-- **Update:** `docker compose up -d`. With `pull_policy: always`, this pulls the newest image every time. The saved volume in `discord-bot1/data` is kept.
+- **Update:** `docker compose up -d`. With `pull_policy: always`, this pulls the newest image every time. The saved volume in `state.json` is kept.
 - **Uninstall:** `docker compose down`, then remove the bot under **Server Settings → Integrations**, or kick it from the member list.
 
 ## Configuration
@@ -182,8 +182,8 @@ All settings come from `.env`. `.env.example` is the template.
 | `IDLE_DISCONNECT_SECONDS` | no | `300` | How long the bot stays in voice with an empty queue before leaving. `0` means never leave. |
 | `AUDIO_BITRATE_KBPS` | no | `128` | Bitrate of the Opus stream sent to Discord (16–510). Every track is re-encoded once after loudness normalisation and volume. Discord caps a voice channel at 64 kbps by default, 96–384 kbps with server boosts. |
 | `HEALTH_PORT` | no | `8080` | Port for the `GET /healthz` endpoint |
-| `STATE_FILE` | no | `/data/state.json` | Path *inside the container* where the bot keeps its persistent state (the `/vol` level). `compose.yml` mounts `discord-bot1/data` there. |
-| `YTDLP_COOKIES_FILE` | no | `/config/cookies.txt` | Path *inside the container* to the signed-in YouTube `cookies.txt`. The file itself is required, see [YouTube cookies](#youtube-cookies). |
+| `STATE_FILE` | no | `/data/state.json` | Path *inside the container* where the bot keeps its persistent state (the `/vol` level). `compose.yml` bind-mounts `./state.json` there read-write. |
+| `YTDLP_COOKIES_FILE` | no | `/config/cookies.txt` | Path *inside the container* to the signed-in YouTube `cookies.txt`. `compose.yml` bind-mounts `./cookies.txt` there read-only. The file itself is required, see [YouTube cookies](#youtube-cookies). |
 | `APP_ENV` | no | `production` | Environment name included in log lines |
 | `LOG_LEVEL` | no | `info` | Lowest severity written: `debug`, `info`, `warn` or `error`. `debug` adds voice and player state changes. |
 
@@ -198,7 +198,7 @@ YouTube answers servers that are not signed in with "Sign in to confirm you're n
    2. In that same tab, go to `https://www.youtube.com/robots.txt`.
    3. Export the cookies for `youtube.com` in **Netscape** format, for example with the "Get cookies.txt LOCALLY" extension (allow it in private windows). JSON exports do not work.
    4. Close the private window without signing out, and never open it again.
-2. Copy the file to the host as `discord-bot1/config/cookies.txt`, next to `compose.yml`. Copy the file itself (`scp`), do not paste its contents: the fields must stay separated by tabs. The container runs as UID 1000, so the file must be readable by that user. Keep it private: `sudo chown 1000:1000 discord-bot1/config/cookies.txt && sudo chmod 600 discord-bot1/config/cookies.txt`. Git ignores this file.
+2. Copy the file to the host as `cookies.txt`, next to `compose.yml`. Copy the file itself (`scp`), do not paste its contents: the fields must stay separated by tabs. The container runs as UID 1000, so the file must be readable by that user. Keep it private: `sudo chown 1000:1000 cookies.txt && sudo chmod 600 cookies.txt`. Git ignores this file.
 3. Run `docker compose up -d --force-recreate`. The log shows `youtube cookies loaded` with the number of YouTube cookies and when the session expires.
 
 At startup the bot checks that the file is a Netscape `cookies.txt`, that yt-dlp can parse it, and that it holds an unexpired signed-in session (`LOGIN_INFO` plus `SAPISID` for `.youtube.com`). If any check fails it exits with code `78` and names the problem. It cannot tell from the file alone whether YouTube has already rotated the cookies. That shows up later as a `yt-dlp warning` in the logs and error code `E201` on `/add`.

@@ -39,7 +39,8 @@ WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY package.json ./
 COPY src ./src
-# Persistent bot state (/data/state.json); owned by the runtime user so an anonymous volume is writable too.
+# Persistent bot state (/data/state.json). Compose bind-mounts the file; without that, the anonymous
+# volume is owned by the runtime user so it stays writable.
 RUN mkdir -p /data && chown 1000:1000 /data
 VOLUME ["/data"]
 ENV NODE_ENV=production \

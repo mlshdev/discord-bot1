@@ -140,11 +140,11 @@ export async function loadCookies(path: string, now: number = Date.now()): Promi
     const code = isErrnoException(error) ? error.code : undefined;
     const reason =
       code === "ENOENT"
-        ? "does not exist; place your exported cookies.txt at discord-bot1/config/cookies.txt"
+        ? "does not exist; place your exported cookies.txt next to compose.yml"
         : code === "EACCES"
           ? "is not readable by UID 1000; run chown 1000:1000 on it"
           : code === "EISDIR"
-            ? "is a directory, not a file"
+            ? "is a directory: Docker creates a missing bind-mount source as one, so remove it on the host and put your cookies.txt there"
             : "could not be read";
     throw new ConfigError(`YouTube cookies file ${path} ${reason}`, { cause: error });
   }

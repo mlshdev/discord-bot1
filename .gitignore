@@ -12,9 +12,8 @@ AGENTS.local.md
 # Docker stack runtime
 */logs/
 !*/logs/.gitkeep
-discord-bot1/config/cookies.txt
-discord-bot1/data/*
-!discord-bot1/data/.gitkeep
+cookies.txt
+state.json
 
 # Environment & secrets
 .env

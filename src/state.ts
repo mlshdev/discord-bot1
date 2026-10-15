@@ -1,4 +1,4 @@
-import { mkdir, open, readFile, rename } from "node:fs/promises";
+import { mkdir, open, readFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { MAX_VOLUME_LEVEL } from "./commands.ts";
 import { errorFields } from "./errors.ts";
@@ -22,6 +22,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 export function parseState(contents: string): StateParseResult {
+  if (contents.trim() === "") {
+    return { ok: true, state: DEFAULT_STATE };
+  }
   let parsed: unknown;
   try {
     parsed = JSON.parse(contents);
@@ -73,8 +76,15 @@ export class StateStore {
     try {
       contents = await readFile(this.#path, "utf8");
     } catch (error) {
-      if (errnoCode(error) === "ENOENT") {
+      const code = errnoCode(error);
+      if (code === "ENOENT") {
         this.#logger.info("no saved bot state, using defaults", { path: this.#path });
+      } else if (code === "EISDIR") {
+        this.#logger.warn("bot state path is a directory, using defaults", {
+          ...errorFields("E501"),
+          path: this.#path,
+          hint: "Docker creates a missing bind-mount source as a directory: remove it, then touch state.json and chown 1000:1000 it",
+        });
       } else {
         this.#logger.warn("could not read bot state, using defaults", {
           ...errorFields("E501"),
@@ -104,17 +114,17 @@ export class StateStore {
     return next;
   }
 
-  // Written to a temporary file, flushed and renamed, so a crash never leaves a torn file.
+  // Rewritten in place, because rename() over a single-file bind mount fails with EBUSY. The file
+  // is a few dozen bytes written in one call; a torn write reads back as empty or invalid and
+  // falls back to the defaults.
   async #write(state: BotState): Promise<void> {
-    const temporary = `${this.#path}.tmp`;
     await mkdir(dirname(this.#path), { recursive: true });
-    const handle = await open(temporary, "w", 0o600);
+    const handle = await open(this.#path, "w", 0o600);
     try {
       await handle.writeFile(serializeState(state), "utf8");
       await handle.sync();
     } finally {
       await handle.close();
     }
-    await rename(temporary, this.#path);
   }
 }

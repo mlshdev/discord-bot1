@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmod, mkdtemp, readdir, readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
@@ -38,6 +38,8 @@ describe("parseState", () => {
   });
 
   it("rejects malformed, foreign and out-of-range files", () => {
+    assert.deepEqual(parseState(""), { ok: true, state: DEFAULT_STATE });
+    assert.deepEqual(parseState(" \n"), { ok: true, state: DEFAULT_STATE });
     assert.equal(parseState("{nope").ok, false);
     assert.equal(parseState("[]").ok, false);
     assert.equal(parseState('{"volume": 50}').ok, false);
@@ -62,6 +64,25 @@ describe("StateStore", () => {
     await new StateStore(path, logger).save({ volume: 65 });
     assert.deepEqual(await new StateStore(path, logger).load(), { volume: 65 });
     assert.deepEqual(await readdir(join(path, "..")), ["state.json"]);
+  });
+
+  it("rewrites an existing file in place, as a single-file bind mount requires", async () => {
+    const path = await tempPath();
+    const { logger } = recordingLogger();
+    const store = new StateStore(path, logger);
+    await store.save({ volume: 150 });
+    const before = await stat(path);
+    await store.save({ volume: 7 });
+    assert.equal((await stat(path)).ino, before.ino);
+    assert.deepEqual(await new StateStore(path, logger).load(), { volume: 7 });
+  });
+
+  it("explains a directory left behind by Docker", async () => {
+    const path = await tempPath();
+    await mkdir(path, { recursive: true });
+    const { logger, entries } = recordingLogger();
+    assert.deepEqual(await new StateStore(path, logger).load(), DEFAULT_STATE);
+    assert.match(String(entries.at(-1)?.fields?.hint), /touch state\.json/);
   });
 
   it("keeps the last of several concurrent saves", async () => {

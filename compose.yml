@@ -18,8 +18,8 @@ services:
       - path: ".env"
         required: true
     volumes:
-      - "./discord-bot1/config:/config:ro"
-      - "./discord-bot1/data:/data:rw"
+      - "./cookies.txt:/config/cookies.txt:ro"
+      - "./state.json:/data/state.json:rw"
     logging:
       driver: "json-file"
       options:
