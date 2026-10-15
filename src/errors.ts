@@ -11,6 +11,7 @@ export const ERROR_CODES = {
   E207: "YouTube rate-limited or refused the request (HTTP 403/429)",
   E208: "yt-dlp timed out while resolving the video",
   E209: "yt-dlp returned empty or malformed metadata",
+  E210: "YouTube invalidated the cookies during the request (rotated or signed out); re-export them",
   E299: "yt-dlp failed for an unclassified reason",
   E301: "audio pipeline (yt-dlp → ffmpeg) could not be started",
   E302: "audio stream failed during playback",
@@ -37,7 +38,14 @@ const YTDLP_PATTERNS: readonly (readonly [RegExp, ErrorCode])[] = [
   ],
 ];
 
+// YouTube clears LOGIN_INFO when it rejects the session; the error that follows (often
+// "Requested format is not available") is only a symptom of that.
+const COOKIES_ROTATED = /cookies are no longer valid/i;
+
 export function classifyYtDlpError(message: string): ErrorCode {
+  if (COOKIES_ROTATED.test(message)) {
+    return "E210";
+  }
   return YTDLP_PATTERNS.find(([pattern]) => pattern.test(message))?.[1] ?? "E299";
 }
 
