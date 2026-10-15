@@ -12,6 +12,7 @@ import {
   type StringSelectMenuInteraction,
   StringSelectMenuOptionBuilder,
 } from "discord.js";
+import { errorFields } from "./errors.ts";
 import { formatDuration, totalDuration, truncate } from "./format.ts";
 import type { Logger } from "./logger.ts";
 import type { MusicPlayer, PlayerSnapshot } from "./player.ts";
@@ -82,7 +83,7 @@ function button(
 }
 
 export function renderMenu(snapshot: PlayerSnapshot, state: MenuState, closed: boolean): MenuView {
-  const { current, upcoming, paused } = snapshot;
+  const { current, upcoming, paused, volume } = snapshot;
   const pages = pageCount(upcoming.length);
   const start = state.page * PAGE_SIZE;
   const pageItems = upcoming.slice(start, start + PAGE_SIZE);
@@ -108,7 +109,7 @@ export function renderMenu(snapshot: PlayerSnapshot, state: MenuState, closed: b
       { name: `Up next (${upcoming.length})`, value: list },
     )
     .setFooter({
-      text: `Page ${state.page + 1}/${pages} · total ${formatDuration(totalDuration(upcoming))}${closed ? " · menu closed" : ""}`,
+      text: `Page ${state.page + 1}/${pages} · total ${formatDuration(totalDuration(upcoming))} · volume ${volume}%${closed ? " · menu closed" : ""}`,
     });
   if (state.notice !== undefined) {
     embed.setDescription(state.notice);
@@ -319,7 +320,11 @@ export async function openMenu(
       }
       await component.update(render(false));
     } catch (error) {
-      logger.error("menu interaction failed", { error, customId: component.customId });
+      logger.error("menu interaction failed", {
+        ...errorFields("E101"),
+        error,
+        customId: component.customId,
+      });
     }
   });
 

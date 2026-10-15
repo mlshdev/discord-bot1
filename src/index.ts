@@ -16,11 +16,14 @@ import {
 import {
   COMMAND_DEFINITIONS,
   type Command,
+  LEVEL_OPTION,
   PRIVILEGED_COMMANDS,
   toCommand,
   URL_OPTION,
 } from "./commands.ts";
 import { type Config, ConfigError, loadConfig } from "./config.ts";
+import { type LoadedCookies, loadCookies } from "./cookies.ts";
+import { type ErrorCode, errorFields, userMessage } from "./errors.ts";
 import { describeTrack } from "./format.ts";
 import { startHealthServer } from "./health.ts";
 import { createLogger, type Logger } from "./logger.ts";
@@ -60,6 +63,12 @@ async function replyPrivately(interaction: CommandInteraction, content: string):
   }
 }
 
+// Errors never stay in the channel: the public "thinking…" reply is replaced by a private one.
+async function failPrivately(interaction: CommandInteraction, content: string): Promise<void> {
+  await interaction.deleteReply();
+  await interaction.followUp({ content, flags: MessageFlags.Ephemeral });
+}
+
 async function handleAdd(
   interaction: CommandInteraction,
   argument: string,
@@ -83,9 +92,9 @@ async function handleAdd(
   try {
     info = await runtime.ytDlp.resolve(url);
   } catch (error) {
-    runtime.logger.warn("track resolve failed", { url, error });
-    const reason = error instanceof TrackResolveError ? error.message : "unexpected error";
-    await interaction.editReply(`⚠️ Could not add that video: ${reason}`);
+    const code: ErrorCode = error instanceof TrackResolveError ? error.code : "E299";
+    runtime.logger.warn("track resolve failed", { ...errorFields(code), url, error });
+    await failPrivately(interaction, userMessage("Could not add that video.", code));
     return;
   }
   try {
@@ -97,7 +106,7 @@ async function handleAdd(
     );
   } catch (error) {
     if (error instanceof QueueFullError) {
-      await interaction.editReply(`The queue is full (${error.capacity} tracks).`);
+      await failPrivately(interaction, `The queue is full (${error.capacity} tracks).`);
       return;
     }
     throw error;
@@ -136,12 +145,32 @@ async function dispatch(
       await interaction.reply(`👋 Disconnected and cleared ${cleared} queued track(s).`);
       return;
     }
+    case "volume": {
+      if (command.level === null) {
+        await replyPrivately(interaction, `🔊 Volume is **${player.volume}%**.`);
+        return;
+      }
+      const previous = player.volume;
+      player.setVolume(command.level);
+      runtime.logger.info("volume changed", {
+        from: previous,
+        to: command.level,
+        userId: interaction.user.id,
+      });
+      await interaction.reply(
+        `🔊 Volume set to **${command.level}%** by <@${interaction.user.id}>.`,
+      );
+      return;
+    }
   }
 }
 
 async function handleCommand(interaction: CommandInteraction, runtime: Runtime): Promise<void> {
   const { config, logger } = runtime;
-  const command = toCommand(interaction.commandName, interaction.options.getString(URL_OPTION));
+  const command = toCommand(interaction.commandName, {
+    url: interaction.options.getString(URL_OPTION),
+    level: interaction.options.getInteger(LEVEL_OPTION),
+  });
   if (command === undefined) {
     logger.warn("unknown command", { command: interaction.commandName });
     await replyPrivately(interaction, "Unknown command.");
@@ -233,12 +262,32 @@ async function main(): Promise<void> {
     level: config.logLevel,
   });
 
+  let cookies: LoadedCookies;
+  try {
+    cookies = await loadCookies(config.ytDlpCookiesFile);
+  } catch (error) {
+    logger.error("invalid youtube cookies", { error });
+    process.exit(error instanceof ConfigError ? 78 : 1);
+  }
+  const { report } = cookies;
+  logger.info("youtube cookies loaded", {
+    path: cookies.path,
+    entries: report.entries,
+    youtubeEntries: report.youtubeEntries,
+    loginExpiresAt: report.loginExpiresAt?.toISOString(),
+  });
+  if (report.skippedLines.length > 0) {
+    logger.warn("youtube cookies file has unreadable lines", {
+      path: cookies.path,
+      lines: report.skippedLines,
+    });
+  }
+
   const ytDlp = await YtDlp.create({
     ytDlpPath: config.ytDlpPath,
     ffmpegPath: config.ffmpegPath,
     nodePath: process.execPath,
-    cookiesFile: config.ytDlpCookiesFile,
-    audioBitrateKbps: config.audioBitrateKbps,
+    cookies: cookies.contents,
     logger,
   });
   logger.info("yt-dlp detected", { version: await ytDlp.version() });
@@ -279,6 +328,7 @@ async function main(): Promise<void> {
         ytDlp,
         maxQueueSize: config.maxQueueSize,
         idleDisconnectSeconds: config.idleDisconnectSeconds,
+        audioBitrateKbps: config.audioBitrateKbps,
         announce: async (content) => {
           await announceChannel.send({ content });
         },
@@ -345,12 +395,17 @@ async function main(): Promise<void> {
     const active = runtime;
     handleCommand(interaction, active).catch(async (error: unknown) => {
       logger.error("command failed", {
+        ...errorFields("E100"),
         error,
         command: interaction.commandName,
         interactionId: interaction.id,
       });
-      await replyPrivately(interaction, "⚠️ Something went wrong running that command.").catch(
-        (replyError: unknown) => logger.debug("error reply failed", { error: replyError }),
+      const content = userMessage("Something went wrong running that command.", "E100");
+      const reply = interaction.deferred
+        ? failPrivately(interaction, content)
+        : replyPrivately(interaction, content);
+      await reply.catch((replyError: unknown) =>
+        logger.debug("error reply failed", { error: replyError }),
       );
     });
   });

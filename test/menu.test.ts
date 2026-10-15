@@ -20,6 +20,7 @@ function snapshot(count: number, playing = true): PlayerSnapshot {
   return {
     current: playing ? track(0) : undefined,
     paused: false,
+    volume: 100,
     upcoming: Array.from({ length: count }, (_, i) => track(i + 1)),
   };
 }

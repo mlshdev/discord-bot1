@@ -10,7 +10,7 @@
 | Lint and format | Biome | Replaces ESLint and Prettier |
 | Tests | `node:test`, run on Node | Tests run on the same runtime as production |
 | Discord | `discord.js` 14, `@discordjs/voice` 0.19 | |
-| Media | yt-dlp (official PyInstaller *onedir* build), audio-only; Opus passthrough, with ffmpeg (Debian) as fallback only | Avoids re-encoding wherever possible |
+| Media | yt-dlp (official PyInstaller *onedir* build), audio-only → ffmpeg (Debian) `loudnorm` → PCM → `@discordjs/voice` inline volume → `opusscript` | Same loudness for every video, live `/vol` without restarting the stream |
 | yt-dlp JS runtime | **The image's own Node.js**, under Node's permission model | yt-dlp starts the solver as `node --permission -`, which denies filesystem, network, child-process and worker access. No extra runtime is shipped. |
 
 The supported Node line is recorded in `.node-version` (used by CI) and `engines.node` in `package.json`.
@@ -33,9 +33,11 @@ There is no build step. Node strips the types at load time, so the source must s
 src/
   index.ts      entrypoint: config, Discord client, command registration, interaction routing, channel/role checks, shutdown
   config.ts     typed env parsing (ConfigError → exit 78)
+  cookies.ts    mandatory YouTube cookies.txt: read + validate like yt-dlp's MozillaCookieJar (ConfigError → exit 78)
   commands.ts   slash command definitions (COMMAND_DEFINITIONS) and name → discriminated union Command
   youtube.ts    URL allowlist → canonical https://www.youtube.com/watch?v=<id>
-  ytdlp.ts      yt-dlp metadata resolution + audio source (Opus passthrough, ffmpeg fallback)
+  ytdlp.ts      yt-dlp metadata resolution + audio source (yt-dlp → ffmpeg loudnorm → 48 kHz s16le PCM)
+  errors.ts     internal error-code catalog (E1xx–E4xx), yt-dlp stderr classifier, code-only user messages
   queue.ts      pure TrackQueue (enqueue/remove/move/promote/shuffle)
   player.ts     MusicPlayer: voice connection, AudioPlayer, queue advancement
   menu.ts       /mn component UI (embed + select + buttons) and its collector
@@ -60,16 +62,16 @@ test/           node:test unit tests for every pure module
 
    ```
    yt-dlp -f "bestaudio[acodec=opus]/bestaudio" -o - URL
-     → demuxProbe (first 16 KiB)
-       ├─ WebM/Opus or Ogg/Opus (48 kHz stereo) → createAudioResource(type)      no ffmpeg, no re-encode
-       └─ anything else → ffmpeg -c:a libopus -b:a <bitrate> -f ogg → OggOpus   one encode
+     → ffmpeg -af loudnorm=I=-14:TP=-1.5:LRA=11 -ar 48000 -ac 2 -f s16le      decode + normalise
+     → createAudioResource(StreamType.Raw, inlineVolume) → VolumeTransformer   /vol gain, live
+     → prism-media Opus encoder (opusscript) at AUDIO_BITRATE_KBPS             the only encode
    ```
 
    - **No video, ever.** The format selector only matches audio-only formats. There is no `/best` fallback that could pick a muxed video stream, so a video without an audio-only format fails at `/add` with a clear error. `resolve()` uses the same selector, so the failure shows up before the track is queued.
-   - **Transcoding is minimised.** YouTube offers Opus in WebM (itag 251/250/249) for practically every video, so the downloaded bytes are only demuxed into Opus packets and sent to Discord. Verified in the container: `webm/opus`, `transcoded: false`, with no ffmpeg process started.
-   - **Fallback.** `demuxProbe` sends anything it can't validate as Discord-ready (48 kHz stereo) Opus to a single ffmpeg encode to Ogg/Opus. That covers AAC-only formats and mono Opus. The fallback was checked with an AAC input stream. `AUDIO_BITRATE_KBPS` only applies here.
-   - Passthrough Opus keeps YouTube's original bitrate, about 130 kbps VBR for itag 251.
-   - In both paths `@discordjs/voice` only demuxes, so no Opus encoder package (`@discordjs/opus` or `opusscript`) is needed.
+   - **Every track is normalised.** yt-dlp does not expose YouTube's own `loudnessDb`, so ffmpeg's single-pass (dynamic) EBU R128 `loudnorm` brings every source to −14 LUFS integrated, −1.5 dBTP true peak, LRA 11, YouTube's reference level. `loudnorm` resamples internally to 192 kHz, so `-ar 48000` is required. Opus passthrough was dropped on purpose, because both normalisation and live volume need decoded PCM.
+   - **Volume.** `/vol` sets `VolumeTransformer` to `level / 100` on the playing resource and remembers it for the next ones (`MusicPlayer.setVolume`, 0–150, default 100, not persisted across restarts). Above 100 % the 1.5 dB of true-peak headroom runs out quickly and samples clip at int16, hence the cap of 150.
+   - **Encoder.** `@discordjs/voice` encodes PCM through `prism-media`, which loads `@discordjs/opus` or `opusscript`. `opusscript` (pure JS/asm.js, `^0.0.8` as declared by `prism-media`'s peer range) is used because the image installs with `--ignore-scripts`, and the native addon's prebuild step would not run. Verified in the hardened container: 5 s of audio encoded in about 2.5 s at 128 kbps, so one stream is well within real time.
+   - ffmpeg accepts any audio codec yt-dlp delivers (Opus, AAC, mono), so there is no separate fallback path.
    - Transport encryption uses Node's native `aes-256-gcm`.
    - DAVE is handled by `@snazzah/davey`.
 6. yt-dlp needs a JavaScript runtime to solve YouTube's challenges (EJS). The bot passes `--no-js-runtimes --js-runtimes node:<process.execPath>`, so the only runtime yt-dlp can use is the exact Node binary running the bot. There is no `PATH` lookup and nothing to configure.
@@ -82,10 +84,10 @@ test/           node:test unit tests for every pure module
 
 - `#advance()` is the only place that takes tracks from the queue, and the `#advancing` flag makes it re-entrancy-safe. `AudioPlayerStatus.Idle` is the only trigger after a track ends.
 - Forced transitions (skip, play now, disconnect) kill the current yt-dlp process, and ffmpeg too if it is running, *before* calling `AudioPlayer.stop(true)`.
-- `open()` is async because it waits for the probe. A `#generation` counter, bumped by `disconnect()`, throws away any source or connection attempt that finishes after the player was reset.
-- A track that ends naturally keeps its processes for a 10 s grace period. That way a non-zero yt-dlp exit, such as a 403 partway through the stream, is still reported to the channel.
+- `open()` is synchronous: it only spawns yt-dlp and ffmpeg and pipes them together. A `#generation` counter, bumped by `disconnect()`, throws away a connection attempt that finishes after the player was reset.
+- A track that ends naturally keeps its processes for a 10 s grace period. That way a non-zero yt-dlp exit, such as a 403 partway through the stream, is still logged as `E302`.
 - If the bot cannot join voice, the track goes back to the front of the queue instead of being dropped.
-- A connection that is lost for real (still `Disconnected` after 5 s, or `Destroyed`) clears the queue and posts an announcement. An intentional disconnect detaches `#connection` before calling `destroy()`, so it does not post that announcement.
+- A connection that is lost for real (still `Disconnected` after 5 s, or `Destroyed`) clears the queue and logs `E402`. Nothing is posted in the channel. An intentional disconnect detaches `#connection` before calling `destroy()`, so it is not logged as lost.
 
 ### Queue manager (`menu.ts`)
 
@@ -138,10 +140,53 @@ The onedir yt-dlp build is used instead of the single-file binary on purpose. Th
 
 Image size is about 1.1 GB, of which Debian's `ffmpeg` and its libraries account for roughly 420 MB. `dive --ci` passes.
 
+### Error codes
+
+Nothing technical ever reaches Discord. Users see `⚠️ <one sentence>. Error code \`Exxx\`.` as an ephemeral reply to their own command. Background failures (playback, voice) are only logged. Every failure log line spreads `errorFields(code)`, so it carries `errorCode` and `errorClass` next to the raw `error`/`reason`. `src/errors.ts` is the single source of truth. `/add` defers publicly ("is thinking…"), and on failure `failPrivately` deletes that public reply and sends the code as an ephemeral follow-up.
+
+| Code | Meaning | Raised by |
+|---|---|---|
+| `E100` | command handler threw an unexpected exception | `index.ts` interaction handler |
+| `E101` | queue manager interaction threw an unexpected exception | `menu.ts` collector |
+| `E201` | YouTube bot check: the cookies are signed out, rotated or missing | yt-dlp `Sign in to confirm you're not a bot` |
+| `E202` | video unavailable: private, removed, members-only or terminated | yt-dlp |
+| `E203` | age-restricted, and the cookie account cannot confirm age | yt-dlp |
+| `E204` | blocked in the host's country | yt-dlp |
+| `E205` | live stream or premiere | `parseMetadata` `live_status`, or yt-dlp |
+| `E206` | no audio-only format | yt-dlp `Requested format is not available` |
+| `E207` | YouTube rate-limited or refused the request (HTTP 403/429) | yt-dlp |
+| `E208` | yt-dlp timed out while resolving (45 s) | `resolve()` |
+| `E209` | empty or malformed metadata | `parseMetadata` |
+| `E299` | unclassified yt-dlp failure, so read `error.cause` and add a pattern | `classifyYtDlpError` fallback |
+| `E301` | audio pipeline could not be started | `MusicPlayer.#start` |
+| `E302` | audio stream failed during playback | `AudioSource.finished` |
+| `E303` | audio player emitted an error | `AudioPlayer` `error` event |
+| `E401` | could not join the voice channel | `#ensureConnection` |
+| `E402` | voice connection was lost | `VoiceConnectionStatus.Destroyed` |
+
+`classifyYtDlpError` matches yt-dlp's stderr against ordered patterns (first match wins, `E299` otherwise), with a unit test per pattern. Codes are stable: never renumber one, add a new code instead.
+
 ### Runtime hardening (verified locally with OrbStack)
 
-- Capability probe: `cap_drop: [ALL]` with no `cap_add`, plus `read_only: true` and `no-new-privileges`. Under these settings, metadata resolution with Node solving the challenges under `--permission`, Opus passthrough, the ffmpeg fallback, the health server and the config/login error paths all ran with **no permission errors**, so no capability is added back.
+- Capability probe: `cap_drop: [ALL]` with no `cap_add`, plus `read_only: true` and `no-new-privileges`. Under these settings, metadata resolution with Node solving the challenges under `--permission`, the yt-dlp → ffmpeg `loudnorm` → inline volume → `opusscript` pipeline, the health server and the config/login error paths all ran with **no permission errors**, so no capability is added back.
 - The only writable path is the `/tmp` tmpfs. It holds yt-dlp's cache (`XDG_CACHE_HOME=/tmp/.cache`) and the private copy of the cookies file. yt-dlp rewrites its cookie jar on exit, so it cannot use the read-only mount directly.
+
+### YouTube cookies (`cookies.ts`)
+
+Cookies are mandatory: without a signed-in session YouTube answers data-centre IPs with "Sign in to confirm you're not a bot". `YTDLP_COOKIES_FILE` only moves the path (default `/config/cookies.txt`), so the file is picked up without any `.env` change. That matters because `docker compose restart` does not re-read `env_file`.
+
+`loadCookies` reads the file once, before Discord login, and fails with a `ConfigError` (exit 78) on anything yt-dlp would reject or silently ignore. The rules mirror yt-dlp 2026.08.19's `YoutubeDLCookieJar` and CPython's `MozillaCookieJar`, which were checked against the real binary in the image:
+
+| Check | Why |
+|---|---|
+| First line matches `#( Netscape)? HTTP Cookie File` | `MozillaCookieJar` rejects the file otherwise. JSON exports get their own message. |
+| 7 tab-separated fields, numeric expiry | yt-dlp skips other lines with only a `WARNING`. Lines are reported by number; if none survive, startup fails. |
+| Include-subdomains flag is `TRUE` exactly when the domain starts with `.` | `MozillaCookieJar` asserts this and then rejects the **whole** file. |
+| Unexpired `LOGIN_INFO` plus one of `SAPISID` / `__Secure-1PAPISID` / `__Secure-3PAPISID` on `youtube.com` | yt-dlp's `_has_auth_cookies`. Without both, yt-dlp does not treat the session as signed in. |
+
+Rotation can't be detected offline. yt-dlp checks `_has_auth_cookies` after every request and warns "cookies are no longer valid", so `--no-warnings` is not passed. `resolve()` logs every `WARNING:` line as `yt-dlp warning`, on success and on failure. A final `Sign in to confirm you're not a bot` error is replaced with a short, actionable reply in Discord. The raw yt-dlp error is still kept in the logged `cause`.
+
+The validated contents are written to `/tmp/discord-bot1-cookies.txt` (mode 0600). yt-dlp loads that file and saves it again on every run, so refreshed session cookies carry over between tracks until the container is recreated.
 - `init: true` gives the container a real PID 1 that reaps the yt-dlp and ffmpeg child processes.
 
 ## CI/CD

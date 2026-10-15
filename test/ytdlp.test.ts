@@ -2,7 +2,12 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { formatDuration, totalDuration } from "../src/format.ts";
 import type { Track } from "../src/queue.ts";
-import { parseMetadata, summarizeStderr, TrackResolveError } from "../src/ytdlp.ts";
+import {
+  extractWarnings,
+  parseMetadata,
+  summarizeStderr,
+  TrackResolveError,
+} from "../src/ytdlp.ts";
 
 const URL_FALLBACK = "https://www.youtube.com/watch?v=dQw4w9WgXcQ";
 
@@ -37,7 +42,7 @@ describe("parseMetadata", () => {
   it("rejects live streams", () => {
     assert.throws(
       () => parseMetadata(JSON.stringify({ title: "T", live_status: "is_live" }), URL_FALLBACK),
-      TrackResolveError,
+      (error: unknown) => error instanceof TrackResolveError && error.code === "E205",
     );
   });
 
@@ -58,6 +63,17 @@ describe("summarizeStderr", () => {
   it("falls back to the last line and a default", () => {
     assert.equal(summarizeStderr("first\nsecond\n"), "second");
     assert.equal(summarizeStderr(""), "unknown error");
+  });
+});
+
+describe("extractWarnings", () => {
+  it("returns WARNING lines without their prefix", () => {
+    const stderr =
+      "[youtube] x: Downloading webpage\nWARNING: [youtube] The provided YouTube account cookies are no longer valid.\nERROR: boom\n";
+    assert.deepEqual(extractWarnings(stderr), [
+      "[youtube] The provided YouTube account cookies are no longer valid.",
+    ]);
+    assert.deepEqual(extractWarnings(""), []);
   });
 });
 

@@ -2,13 +2,13 @@
 
 A Discord music bot that plays **YouTube only**, in **one** voice channel on **one** server, driven by slash commands in **one** text channel. It runs on Node.js 24 LTS. Audio is fetched with [yt-dlp](https://github.com/yt-dlp/yt-dlp), which uses that same Node.js binary, sandboxed, to solve YouTube's JavaScript challenges. The container image is rebuilt automatically whenever yt-dlp publishes a new release.
 
-Only audio is ever downloaded, never video. YouTube's Opus audio goes straight to Discord without being re-encoded.
+Only audio is ever downloaded, never video. Every track is loudness-normalised (EBU R128, −14 LUFS, the same reference YouTube uses), so quiet and loud videos play at the same level, and DJs can turn the volume up or down with `/vol`.
 
 ## Commands
 
 The bot uses Discord's slash commands. Type `/` in the message box and pick a command from the list; Discord shows each one's description and fills in the `url` field for `/add`. The commands are registered on the server set by `GUILD_ID` every time the bot starts, so they appear immediately and only on that server.
 
-Commands only run in the text channel set by `TEXT_CHANNEL_ID`. Used anywhere else, the bot answers with a private reply pointing to that channel. Refusals and usage errors are always private (only you see them); results such as "Added …" are visible to everyone.
+Commands only run in the text channel set by `TEXT_CHANNEL_ID`. Used anywhere else, the bot answers with a private reply pointing to that channel. Refusals and errors are always private (only you see them) and are never posted in the channel; results such as "Added …" are visible to everyone. Errors show only a short code such as `E201`. What the code means is logged for the bot's operator, see [Error codes](#error-codes).
 
 | Command | Who | What it does |
 |---|---|---|
@@ -16,6 +16,7 @@ Commands only run in the text channel set by `TEXT_CHANNEL_ID`. Used anywhere el
 | `/ff` | `DJ_ROLE_ID` only | Force-skips the current song. |
 | `/mn` | `DJ_ROLE_ID` only | Opens the interactive queue manager. |
 | `/won` | `DJ_ROLE_ID` only | Stops playback, clears the queue and leaves the voice channel. |
+| `/vol [level:<0-150>]` | `DJ_ROLE_ID` only | Sets the volume in percent of the normalised loudness, for the current and all later tracks. Without `level` it privately shows the current volume. Starts at `100` after every restart. |
 
 Server admins can further limit who sees each command, and in which channels, under **Server Settings → Integrations → *bot name* → Command Permissions**. The bot's own channel and DJ-role checks still apply on top.
 
@@ -46,6 +47,7 @@ This walks through everything from an empty Discord account to a bot playing mus
 
 - A Linux host, `amd64` or `arm64`, with Docker Engine and Docker Compose 2.24 or newer. The bot only makes outbound HTTPS connections (to Discord and YouTube) and needs no open inbound ports.
 - A Discord account with the **Manage Server** permission on the server you want to add the bot to. Only members with that permission can install bots.
+- A YouTube account for the bot to sign in with, ideally a throwaway one. YouTube blocks anonymous downloads from servers, so the bot refuses to start without its cookies ([YouTube cookies](#youtube-cookies)).
 
 ### Step 1: Create the application and bot user
 
@@ -125,7 +127,7 @@ chmod 600 .env
 "${EDITOR:-nano}" .env
 ```
 
-Fill in `DISCORD_TOKEN` and the four IDs. Every variable is described in [Configuration](#configuration). Then start the bot:
+Fill in `DISCORD_TOKEN` and the four IDs. Every variable is described in [Configuration](#configuration). Put the exported cookies at `discord-bot1/config/cookies.txt` as described in [YouTube cookies](#youtube-cookies). Then start the bot:
 
 ```sh
 docker compose up -d
@@ -138,12 +140,13 @@ The image `ghcr.io/mlshdev/discord-bot1:latest` is public, so you don't need to 
 1. `docker compose ps` shows the container as `healthy` within about 30 seconds.
 2. `docker compose logs discord-bot1` contains `"message":"slash commands registered"` and `"message":"bot ready"` lines, and the bot shows as online in Discord.
 3. In the command channel, type `/add`, pick the bot's command, paste `https://www.youtube.com/watch?v=dQw4w9WgXcQ` into `url` and press Enter. The bot shows "is thinking…", then `➕ Added …, starting playback.`, joins the voice channel and plays.
-4. As a member with the DJ role, run `/mn` to open the queue manager, and `/won` to stop.
+4. As a member with the DJ role, run `/vol level:60` to turn the volume down, `/mn` to open the queue manager, and `/won` to stop.
 
 ### Troubleshooting
 
 | Symptom | Cause and fix |
 |---|---|
+| Container exits with code `78`, log says `invalid youtube cookies` | `discord-bot1/config/cookies.txt` is missing, unreadable, malformed, signed out or expired. The `error.message` names the exact problem. Fix it as described in [YouTube cookies](#youtube-cookies). |
 | Container exits with code `78`, log says `invalid configuration` | A required variable is missing, or an ID is not a 17–20 digit number. Fix `.env`. |
 | Container exits with code `78`, log says `startup validation failed` | An ID points at the wrong place, or the bot is not on that server or cannot see a channel. Check step 3 and step 4. If the error has `code` `50001` and a route ending in `/commands`, the bot was invited without the `applications.commands` scope: authorise the link from step 2 again. |
 | Container exits with code `1`, log says `discord login failed` | The token is wrong or was reset (step 1.3). |
@@ -152,7 +155,8 @@ The image `ghcr.io/mlshdev/discord-bot1:latest` is public, so you don't need to 
 | "The application did not respond" | The bot was offline or still starting. Check `docker compose ps` and the logs. |
 | `missing discord permissions` in the logs, or `failed to send announcement` with `code` `50013` (Missing Permissions) / `50001` (Missing Access) | The bot lacks a permission in that channel. The `missing` field names the exact permissions. Fix the channel overrides from step 3.2. The bot re-checks on its own and logs `discord permissions ok` once fixed. Commands keep working meanwhile; only the "now playing" announcements are lost. |
 | The bot does not join voice | It is missing Connect or View Channel on the voice channel, or the channel is full. |
-| `/add` answers "Sign in to confirm you're not a bot" | YouTube is blocking the host's IP address. See [YouTube cookies](#youtube-cookies-optional). |
+| `/add` answers with error code `E201` | YouTube no longer accepts the cookies. Look for `yt-dlp warning` lines in the logs: "cookies are no longer valid" means they were rotated. Export fresh ones as described in [YouTube cookies](#youtube-cookies) and run `docker compose up -d --force-recreate`. |
+| `youtube cookies file has unreadable lines` in the logs | yt-dlp skips those lines. Each line needs 7 fields separated by **tabs**. Copy-paste through a terminal or chat often turns tabs into spaces, so copy the file itself instead (`scp`). |
 
 ### Update and uninstall
 
@@ -169,26 +173,32 @@ All settings come from `.env`. `.env.example` is the template.
 | `GUILD_ID` | yes | — | The only server the bot responds in |
 | `TEXT_CHANNEL_ID` | yes | — | The only channel commands run in, and where "now playing" is announced. A voice channel's built-in chat also works. |
 | `VOICE_CHANNEL_ID` | yes | — | The voice channel the bot plays in |
-| `DJ_ROLE_ID` | yes | — | Role allowed to use `/ff`, `/mn` and `/won` |
+| `DJ_ROLE_ID` | yes | — | Role allowed to use `/ff`, `/mn`, `/won` and `/vol` |
 | `MAX_QUEUE_SIZE` | no | `100` | Maximum number of queued tracks (1–1000) |
 | `IDLE_DISCONNECT_SECONDS` | no | `300` | How long the bot stays in voice with an empty queue before leaving. `0` means never leave. |
-| `AUDIO_BITRATE_KBPS` | no | `128` | Opus bitrate (16–510). Only used in the rare case a video has no Opus audio and has to be re-encoded. Opus audio is passed through at its original quality. |
+| `AUDIO_BITRATE_KBPS` | no | `128` | Bitrate of the Opus stream sent to Discord (16–510). Every track is re-encoded once after loudness normalisation and volume. Discord caps a voice channel at 64 kbps by default, 96–384 kbps with server boosts. |
 | `HEALTH_PORT` | no | `8080` | Port for the `GET /healthz` endpoint |
-| `YTDLP_COOKIES_FILE` | no | — | Path to a Netscape `cookies.txt`, for when YouTube asks the bot to "confirm you're not a bot" |
+| `YTDLP_COOKIES_FILE` | no | `/config/cookies.txt` | Path *inside the container* to the signed-in YouTube `cookies.txt`. The file itself is required, see [YouTube cookies](#youtube-cookies). |
 | `APP_ENV` | no | `production` | Environment name included in log lines |
 | `LOG_LEVEL` | no | `info` | Lowest severity written: `debug`, `info`, `warn` or `error`. `debug` adds voice and player state changes. |
 
 The bot checks the IDs at startup. If one is wrong it exits with code `78`.
 
-### YouTube cookies (optional)
+### YouTube cookies
 
-Servers hosted in data centres are often blocked by YouTube. If `/add` fails with "Sign in to confirm you're not a bot":
+YouTube answers servers that are not signed in with "Sign in to confirm you're not a bot", so the bot needs the cookies of a signed-in account and does not start without them. Use a throwaway account: the cookies log in to it, and heavy use can get it flagged.
 
-1. Export a `cookies.txt` from a logged-in browser session. A throwaway account is recommended.
-2. Save it as `discord-bot1/config/cookies.txt` next to `compose.yml`. The container runs as UID 1000, so the file must be readable by that user. The cookies log in to the account, so keep them private: `sudo chown 1000:1000 discord-bot1/config/cookies.txt && sudo chmod 600 discord-bot1/config/cookies.txt`. Git ignores this file.
-3. Set `YTDLP_COOKIES_FILE=/config/cookies.txt` in `.env` and restart the bot.
+1. Export the cookies so the browser cannot rotate them afterwards. YouTube invalidates exported cookies as soon as the same session is used again in the browser. This is the most common reason cookies "do not work":
+   1. Open a new private/incognito window and sign in to YouTube there.
+   2. In that same tab, go to `https://www.youtube.com/robots.txt`.
+   3. Export the cookies for `youtube.com` in **Netscape** format, for example with the "Get cookies.txt LOCALLY" extension (allow it in private windows). JSON exports do not work.
+   4. Close the private window without signing out, and never open it again.
+2. Copy the file to the host as `discord-bot1/config/cookies.txt`, next to `compose.yml`. Copy the file itself (`scp`), do not paste its contents: the fields must stay separated by tabs. The container runs as UID 1000, so the file must be readable by that user. Keep it private: `sudo chown 1000:1000 discord-bot1/config/cookies.txt && sudo chmod 600 discord-bot1/config/cookies.txt`. Git ignores this file.
+3. Run `docker compose up -d --force-recreate`. The log shows `youtube cookies loaded` with the number of YouTube cookies and when the session expires.
 
-The file is mounted read-only. The bot works on a private copy inside the container's `/tmp`.
+At startup the bot checks that the file is a Netscape `cookies.txt`, that yt-dlp can parse it, and that it holds an unexpired signed-in session (`LOGIN_INFO` plus `SAPISID` for `.youtube.com`). If any check fails it exits with code `78` and names the problem. It cannot tell from the file alone whether YouTube has already rotated the cookies. That shows up later as a `yt-dlp warning` in the logs and error code `E201` on `/add`.
+
+The file is mounted read-only and is read once at startup. The bot works on a private copy inside the container's `/tmp`, which yt-dlp updates as YouTube refreshes the session. After replacing the file, recreate the container so the bot reads it again.
 
 ## Health and logs
 
@@ -205,17 +215,30 @@ The file is mounted read-only. The bot works on a private copy inside the contai
 
   | Message | Severity | Meaning |
   |---|---|---|
-  | `slash commands registered` | info | `/add`, `/ff`, `/mn` and `/won` were registered on the server |
+  | `slash commands registered` | info | `/add`, `/ff`, `/mn`, `/won` and `/vol` were registered on the server |
   | `bot ready` | info | Logged in and the channels were validated |
   | `discord permissions ok` / `missing discord permissions` | info / warn | Permission check of the command and voice channels. It runs at startup and again whenever a role or one of the two channels changes, and is logged only when the result changes. |
   | `command received` / `command denied` | info | A command was accepted, or refused (`reason` is `missing DJ role` or `wrong channel`) |
-  | `command failed` | error | A command threw. The user gets a private error reply. Includes `command` and `interactionId`. |
+  | `command failed` | error | A command threw (`E100`). The user gets a private reply with only the code. Includes `command` and `interactionId`. |
   | `menu interaction denied` | info | A queue-manager button was clicked by someone without the DJ role |
-  | `now playing` | info | A track started. Includes `inputType` and whether it was `transcoded`. |
-  | `track resolve failed` / `audio source failed` | warn | yt-dlp could not resolve or stream a video. The reason is included. |
-  | `voice connection failed` / `voice connection lost` | error / warn | The bot could not join voice, or lost the connection |
+  | `now playing` | info | A track started. Includes the current `volume`. |
+  | `volume changed` | info | A DJ used `/vol`. Includes `from`, `to` and `userId`. |
+  | `youtube cookies loaded` / `invalid youtube cookies` | info / error | The cookie file passed the startup check, or did not (exit code 78) |
+  | `yt-dlp warning` | warn | A `WARNING:` line from yt-dlp, for example rotated cookies or skipped cookie lines |
+  | `track resolve failed` / `audio source failed` | warn | yt-dlp could not resolve or stream a video. Includes `errorCode`, `errorClass` and the raw reason. |
+  | `voice connection failed` / `voice connection lost` | error / warn | The bot could not join voice (`E401`), or lost the connection (`E402`). Nothing is posted in the channel. |
   | `discord gateway disconnected` / `reconnecting` / `resumed` | warn / info | Gateway connection drops and recoveries, with the close code |
   | `invalid configuration` / `startup validation failed` / `discord login failed` / `fatal startup error` | error | Startup failures. These exit with code 78, 78, 1 and 1. |
+
+### Error codes
+
+Discord users only ever see a code. Every log line for a failure carries the same `errorCode` plus an `errorClass` that explains it, so find the meaning with:
+
+```sh
+docker compose logs --no-log-prefix discord-bot1 | jq 'select(.errorCode == "E201")'
+```
+
+The full catalog lives in `src/errors.ts` and in [TECHNICAL.md](TECHNICAL.md#error-codes). Codes `E2xx` come from yt-dlp and YouTube, `E3xx` from audio playback, `E4xx` from the voice connection, and `E1xx` are bugs in the bot.
 
 ## Images
 
