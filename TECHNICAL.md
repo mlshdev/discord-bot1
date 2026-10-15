@@ -157,6 +157,7 @@ Nothing technical ever reaches Discord. Users see `⚠️ <one sentence>. Error 
 | `E207` | YouTube rate-limited or refused the request (HTTP 403/429) | yt-dlp |
 | `E208` | yt-dlp timed out while resolving (45 s) | `resolve()` |
 | `E209` | empty or malformed metadata | `parseMetadata` |
+| `E210` | YouTube invalidated the cookies during the request (rotated or signed out) | yt-dlp `cookies are no longer valid` warning, which wins over whatever error follows it |
 | `E299` | unclassified yt-dlp failure, so read `error.cause` and add a pattern | `classifyYtDlpError` fallback |
 | `E301` | audio pipeline could not be started | `MusicPlayer.#start` |
 | `E302` | audio stream failed during playback | `AudioSource.finished` |

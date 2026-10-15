@@ -155,7 +155,7 @@ The image `ghcr.io/mlshdev/discord-bot1:latest` is public, so you don't need to 
 | "The application did not respond" | The bot was offline or still starting. Check `docker compose ps` and the logs. |
 | `missing discord permissions` in the logs, or `failed to send announcement` with `code` `50013` (Missing Permissions) / `50001` (Missing Access) | The bot lacks a permission in that channel. The `missing` field names the exact permissions. Fix the channel overrides from step 3.2. The bot re-checks on its own and logs `discord permissions ok` once fixed. Commands keep working meanwhile; only the "now playing" announcements are lost. |
 | The bot does not join voice | It is missing Connect or View Channel on the voice channel, or the channel is full. |
-| `/add` answers with error code `E201` | YouTube no longer accepts the cookies. Look for `yt-dlp warning` lines in the logs: "cookies are no longer valid" means they were rotated. Export fresh ones as described in [YouTube cookies](#youtube-cookies) and run `docker compose up -d --force-recreate`. |
+| `/add` answers with error code `E201` or `E210` | YouTube no longer accepts the cookies. Look for `yt-dlp warning` lines in the logs: "cookies are no longer valid" means they were rotated. Export fresh ones as described in [YouTube cookies](#youtube-cookies) and run `docker compose up -d --force-recreate`. |
 | `youtube cookies file has unreadable lines` in the logs | yt-dlp skips those lines. Each line needs 7 fields separated by **tabs**. Copy-paste through a terminal or chat often turns tabs into spaces, so copy the file itself instead (`scp`). |
 
 ### Update and uninstall

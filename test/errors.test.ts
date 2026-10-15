@@ -21,6 +21,10 @@ describe("classifyYtDlpError", () => {
     ["ERROR: unable to download video data: HTTP Error 403: Forbidden", "E207"],
     ["ERROR: [youtube] abc: HTTP Error 429: Too Many Requests", "E207"],
     ["ERROR: something new", "E299"],
+    [
+      "WARNING: [youtube] The provided YouTube account cookies are no longer valid. They have likely been rotated\nERROR: [youtube] y3MnpLrtnyY: Requested format is not available",
+      "E210",
+    ],
   ];
   for (const [stderr, code] of cases) {
     it(`maps "${stderr.slice(7, 60)}…" to ${code}`, () => {
