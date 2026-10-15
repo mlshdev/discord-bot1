@@ -18,7 +18,7 @@ export const ERROR_CODES = {
   E303: "audio player emitted an error",
   E401: "could not join the voice channel",
   E402: "voice connection was lost",
-  E501: "bot state file (/data/state.json) could not be read, parsed or written",
+  E501: "bot state file (./state.json on the host) could not be read, parsed or written",
 } as const;
 
 export type ErrorCode = keyof typeof ERROR_CODES;
