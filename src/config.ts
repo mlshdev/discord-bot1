@@ -11,7 +11,7 @@ export interface Config {
   readonly healthPort: number;
   readonly ytDlpPath: string;
   readonly ffmpegPath: string;
-  readonly ytDlpCookiesFile: string | undefined;
+  readonly ytDlpCookiesFile: string;
   readonly audioBitrateKbps: number;
   readonly environment: string;
   readonly logLevel: LogLevel;
@@ -24,6 +24,8 @@ export class ConfigError extends Error {
 type Env = Readonly<Record<string, string | undefined>>;
 
 const SNOWFLAKE = /^\d{17,20}$/;
+
+export const DEFAULT_COOKIES_FILE = "/config/cookies.txt";
 
 function required(env: Env, key: string): string {
   const value = env[key]?.trim();
@@ -81,7 +83,7 @@ export function loadConfig(env: Env): Config {
     healthPort: integer(env, "HEALTH_PORT", 8080, 1, 65_535),
     ytDlpPath: optional(env, "YTDLP_PATH") ?? "yt-dlp",
     ffmpegPath: optional(env, "FFMPEG_PATH") ?? "ffmpeg",
-    ytDlpCookiesFile: optional(env, "YTDLP_COOKIES_FILE"),
+    ytDlpCookiesFile: optional(env, "YTDLP_COOKIES_FILE") ?? DEFAULT_COOKIES_FILE,
     audioBitrateKbps: integer(env, "AUDIO_BITRATE_KBPS", 128, 16, 510),
     environment: optional(env, "APP_ENV") ?? "production",
     logLevel: logLevel(env),

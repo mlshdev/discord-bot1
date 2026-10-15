@@ -9,17 +9,22 @@ import {
   entersState,
   joinVoiceChannel,
   NoSubscriberBehavior,
+  StreamType,
   type VoiceConnection,
   VoiceConnectionStatus,
 } from "@discordjs/voice";
+import { MAX_VOLUME_LEVEL } from "./commands.ts";
+import { errorFields } from "./errors.ts";
 import { describeTrack } from "./format.ts";
 import type { Logger } from "./logger.ts";
 import { type MoveDirection, type Track, type TrackInfo, TrackQueue } from "./queue.ts";
-import { type AudioSource, AudioSourceError, type YtDlp } from "./ytdlp.ts";
+import type { AudioSource, YtDlp } from "./ytdlp.ts";
 
 const CONNECT_TIMEOUT_MS = 20_000;
 const RECONNECT_GRACE_MS = 5_000;
 const SOURCE_EXIT_GRACE_MS = 10_000;
+
+export const DEFAULT_VOLUME = 100;
 
 export interface PlayerOptions {
   readonly guildId: string;
@@ -28,6 +33,7 @@ export interface PlayerOptions {
   readonly ytDlp: YtDlp;
   readonly maxQueueSize: number;
   readonly idleDisconnectSeconds: number;
+  readonly audioBitrateKbps: number;
   readonly announce: (content: string) => Promise<void>;
   readonly logger: Logger;
 }
@@ -35,6 +41,7 @@ export interface PlayerOptions {
 export interface PlayerSnapshot {
   readonly current: Track | undefined;
   readonly paused: boolean;
+  readonly volume: number;
   readonly upcoming: readonly Track[];
 }
 
@@ -50,6 +57,10 @@ export class VoiceConnectError extends Error {
   override readonly name = "VoiceConnectError";
 }
 
+export class VolumeRangeError extends Error {
+  override readonly name = "VolumeRangeError";
+}
+
 export class MusicPlayer extends EventEmitter<PlayerEvents> {
   readonly #options: PlayerOptions;
   readonly #queue: TrackQueue;
@@ -57,6 +68,8 @@ export class MusicPlayer extends EventEmitter<PlayerEvents> {
   #connection: VoiceConnection | undefined;
   #current: Track | undefined;
   #source: AudioSource | undefined;
+  #resource: AudioResource<Track> | undefined;
+  #volume = DEFAULT_VOLUME;
   #advancing = false;
   #idleTimer: NodeJS.Timeout | undefined;
   #nextUid = 1;
@@ -72,6 +85,7 @@ export class MusicPlayer extends EventEmitter<PlayerEvents> {
     this.#audioPlayer.on(AudioPlayerStatus.Idle, () => {
       this.#releaseSource(SOURCE_EXIT_GRACE_MS);
       this.#current = undefined;
+      this.#resource = undefined;
       void this.#advance();
     });
     this.#audioPlayer.on("stateChange", (from, to) => {
@@ -80,7 +94,11 @@ export class MusicPlayer extends EventEmitter<PlayerEvents> {
     });
     this.#audioPlayer.on("error", (error) => {
       const track = (error.resource as AudioResource<Track>).metadata;
-      this.#options.logger.error("audio player error", { error, url: track.url });
+      this.#options.logger.error("audio player error", {
+        ...errorFields("E303"),
+        error,
+        url: track.url,
+      });
     });
   }
 
@@ -92,6 +110,7 @@ export class MusicPlayer extends EventEmitter<PlayerEvents> {
     return {
       current: this.#current,
       paused: this.#audioPlayer.state.status === AudioPlayerStatus.Paused,
+      volume: this.#volume,
       upcoming: this.#queue.items,
     };
   }
@@ -105,6 +124,22 @@ export class MusicPlayer extends EventEmitter<PlayerEvents> {
       return { kind: "started", track };
     }
     return { kind: "queued", track, position };
+  }
+
+  get volume(): number {
+    return this.#volume;
+  }
+
+  // Percent of the normalised loudness; applies to the current track at once and to all later ones.
+  setVolume(percent: number): void {
+    if (!Number.isInteger(percent) || percent < 0 || percent > MAX_VOLUME_LEVEL) {
+      throw new VolumeRangeError(
+        `Volume must be an integer from 0 to ${MAX_VOLUME_LEVEL}, got ${percent}`,
+      );
+    }
+    this.#volume = percent;
+    this.#resource?.volume?.setVolume(percent / 100);
+    this.emit("change");
   }
 
   forceSkip(): Track | undefined {
@@ -173,6 +208,7 @@ export class MusicPlayer extends EventEmitter<PlayerEvents> {
     this.#releaseSource();
     this.#audioPlayer.stop(true);
     this.#current = undefined;
+    this.#resource = undefined;
     this.#clearIdleTimer();
     const connection = this.#connection;
     this.#connection = undefined;
@@ -204,11 +240,13 @@ export class MusicPlayer extends EventEmitter<PlayerEvents> {
             return;
           }
           this.#queue.unshift(next);
-          this.#options.logger.error("voice connection failed", { error });
-          await this.#safeAnnounce("⚠️ Could not join the voice channel. Try `!add` again later.");
+          this.#options.logger.error("voice connection failed", { ...errorFields("E401"), error });
           return;
         }
-        if (await this.#start(next, generation)) {
+        if (generation !== this.#generation) {
+          return;
+        }
+        if (this.#start(next)) {
           return;
         }
       }
@@ -218,44 +256,45 @@ export class MusicPlayer extends EventEmitter<PlayerEvents> {
     }
   }
 
-  // Resolves true once advancing should stop: the track is playing or the player was reset meanwhile.
-  async #start(track: Track, generation: number): Promise<boolean> {
-    const { logger } = this.#options;
+  // Returns true once a track is playing; false means it was skipped and the next one is due.
+  #start(track: Track): boolean {
+    const { logger, audioBitrateKbps } = this.#options;
     let source: AudioSource;
     try {
-      source = await this.#options.ytDlp.open(track.url);
+      source = this.#options.ytDlp.open(track.url);
     } catch (error) {
-      if (generation !== this.#generation) {
-        return true;
-      }
-      const reason = error instanceof AudioSourceError ? `: ${error.message}` : "";
-      logger.error("failed to open audio source", { error, url: track.url });
-      void this.#safeAnnounce(`⚠️ Could not play ${describeTrack(track)}${reason}, skipping.`);
+      logger.error("failed to open audio source", {
+        ...errorFields("E301"),
+        error,
+        url: track.url,
+      });
       return false;
-    }
-    if (generation !== this.#generation) {
-      source.stop();
-      return true;
     }
     this.#source = source;
     this.#current = track;
     void source.finished.then((outcome) => {
       if (!outcome.ok && !outcome.stopped) {
-        logger.warn("audio source failed", { url: track.url, reason: outcome.reason });
-        void this.#safeAnnounce(`⚠️ Playback of ${describeTrack(track)} failed: ${outcome.reason}`);
+        logger.warn("audio source failed", {
+          ...errorFields("E302"),
+          url: track.url,
+          reason: outcome.reason,
+        });
       }
     });
     const resource = createAudioResource(source.stream, {
-      inputType: source.inputType,
+      inputType: StreamType.Raw,
+      inlineVolume: true,
       metadata: track,
     });
+    resource.volume?.setVolume(this.#volume / 100);
+    resource.encoder?.setBitrate(audioBitrateKbps * 1000);
+    this.#resource = resource;
     this.#audioPlayer.play(resource);
     logger.info("now playing", {
       url: track.url,
       title: track.title,
       requestedBy: track.requestedBy,
-      inputType: source.inputType,
-      transcoded: source.transcoded,
+      volume: this.#volume,
     });
     void this.#safeAnnounce(
       `🎶 Now playing ${describeTrack(track)} — requested by <@${track.requestedBy}>`,
@@ -301,11 +340,8 @@ export class MusicPlayer extends EventEmitter<PlayerEvents> {
         return;
       }
       this.#connection = undefined;
-      logger.warn("voice connection lost");
       const cleared = this.disconnect();
-      void this.#safeAnnounce(
-        `👋 Lost the voice connection; stopped playback and cleared ${cleared} queued track(s).`,
-      );
+      logger.warn("voice connection lost", { ...errorFields("E402"), cleared });
     });
     connection.subscribe(this.#audioPlayer);
     try {
