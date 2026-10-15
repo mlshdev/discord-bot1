@@ -37,6 +37,7 @@ import {
 } from "./permissions.ts";
 import { MusicPlayer } from "./player.ts";
 import { QueueFullError } from "./queue.ts";
+import { StateStore } from "./state.ts";
 import { chooseVoiceChannel, mentionList } from "./voice.ts";
 import { parseYouTubeUrl } from "./youtube.ts";
 import { TrackResolveError, YtDlp } from "./ytdlp.ts";
@@ -48,6 +49,7 @@ interface Runtime {
   readonly logger: Logger;
   readonly ytDlp: YtDlp;
   readonly player: MusicPlayer;
+  readonly state: StateStore;
 }
 
 type CommandInteraction = ChatInputCommandInteraction<"cached">;
@@ -178,6 +180,14 @@ async function dispatch(
         to: command.level,
         userId: interaction.user.id,
       });
+      // The new volume is already playing; a failed save only means it resets on restart.
+      await runtime.state.save({ volume: command.level }).catch((error: unknown) =>
+        runtime.logger.warn("could not save bot state", {
+          ...errorFields("E501"),
+          path: runtime.config.stateFile,
+          error,
+        }),
+      );
       await interaction.reply(
         `🔊 Volume set to **${command.level}%** by <@${interaction.user.id}>.`,
       );
@@ -312,6 +322,9 @@ async function main(): Promise<void> {
     });
   }
 
+  const state = new StateStore(config.stateFile, logger);
+  const savedState = await state.load();
+
   const ytDlp = await YtDlp.create({
     ytDlpPath: config.ytDlpPath,
     ffmpegPath: config.ffmpegPath,
@@ -371,12 +384,13 @@ async function main(): Promise<void> {
         maxQueueSize: config.maxQueueSize,
         idleDisconnectSeconds: config.idleDisconnectSeconds,
         audioBitrateKbps: config.audioBitrateKbps,
+        initialVolume: savedState.volume,
         announce: async (content) => {
           await announceChannel.send({ content });
         },
         logger,
       });
-      runtime = { config, logger, ytDlp, player };
+      runtime = { config, logger, ytDlp, player, state };
       logger.info("bot ready", {
         user: ready.user.tag,
         guild: guild.name,

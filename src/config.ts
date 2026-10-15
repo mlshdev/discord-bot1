@@ -12,6 +12,7 @@ export interface Config {
   readonly ytDlpPath: string;
   readonly ffmpegPath: string;
   readonly ytDlpCookiesFile: string;
+  readonly stateFile: string;
   readonly audioBitrateKbps: number;
   readonly environment: string;
   readonly logLevel: LogLevel;
@@ -27,6 +28,7 @@ const SNOWFLAKE = /^\d{17,20}$/;
 const MAX_LIST_ITEMS = 25;
 
 export const DEFAULT_COOKIES_FILE = "/config/cookies.txt";
+export const DEFAULT_STATE_FILE = "/data/state.json";
 
 function required(env: Env, key: string): string {
   const value = env[key]?.trim();
@@ -106,6 +108,7 @@ export function loadConfig(env: Env): Config {
     ytDlpPath: optional(env, "YTDLP_PATH") ?? "yt-dlp",
     ffmpegPath: optional(env, "FFMPEG_PATH") ?? "ffmpeg",
     ytDlpCookiesFile: optional(env, "YTDLP_COOKIES_FILE") ?? DEFAULT_COOKIES_FILE,
+    stateFile: optional(env, "STATE_FILE") ?? DEFAULT_STATE_FILE,
     audioBitrateKbps: integer(env, "AUDIO_BITRATE_KBPS", 128, 16, 510),
     environment: optional(env, "APP_ENV") ?? "production",
     logLevel: logLevel(env),
