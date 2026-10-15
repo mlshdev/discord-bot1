@@ -16,7 +16,7 @@ Commands only run in the text channel set by `TEXT_CHANNEL_ID`. Used anywhere el
 | `/ff` | any `DJ_ROLE_ID` role | Force-skips the current song. |
 | `/mn` | any `DJ_ROLE_ID` role | Opens the interactive queue manager. |
 | `/won` | any `DJ_ROLE_ID` role | Stops playback, clears the queue and leaves the voice channel. |
-| `/vol [level:<0-150>]` | any `DJ_ROLE_ID` role | Sets the volume in percent of the normalised loudness, for the current and all later tracks. Without `level` it privately shows the current volume. Starts at `100` after every restart. |
+| `/vol [level:<0-150>]` | any `DJ_ROLE_ID` role | Sets the volume in percent of the normalised loudness, for the current and all later tracks. Without `level` it privately shows the current volume. The level is saved and survives bot and container restarts. It starts at `100` on a fresh install. |
 
 Server admins can further limit who sees each command, and in which channels, under **Server Settings → Integrations → *bot name* → Command Permissions**. The bot's own channel and DJ-role checks still apply on top.
 
@@ -122,7 +122,8 @@ If the bot was added earlier with the old link (`scope=bot`, `permissions=323072
 mkdir -p ~/discord-bot1 && cd ~/discord-bot1
 curl -fsSLO https://raw.githubusercontent.com/mlshdev/discord-bot1/main/compose.yml
 curl -fsSL -o .env https://raw.githubusercontent.com/mlshdev/discord-bot1/main/.env.example
-mkdir -p discord-bot1/config
+mkdir -p discord-bot1/config discord-bot1/data
+sudo chown 1000:1000 discord-bot1/data
 chmod 600 .env
 "${EDITOR:-nano}" .env
 ```
@@ -157,11 +158,13 @@ The image `ghcr.io/mlshdev/discord-bot1:latest` is public, so you don't need to 
 | `missing discord permissions` in the logs, or `failed to send announcement` with `code` `50013` (Missing Permissions) / `50001` (Missing Access) | The bot lacks a permission in that channel. The `missing` field names the exact permissions. Fix the channel overrides from step 3.2. The bot re-checks on its own and logs `discord permissions ok` once fixed. Commands keep working meanwhile; only the "now playing" announcements are lost. |
 | The bot does not join voice | It is missing Connect or View Channel on the voice channel, or the channel is full. |
 | `/add` answers with error code `E201` or `E210` | YouTube no longer accepts the cookies. Look for `yt-dlp warning` lines in the logs: "cookies are no longer valid" means they were rotated. Export fresh ones as described in [YouTube cookies](#youtube-cookies) and run `docker compose up -d --force-recreate`. |
+| The volume resets to 100 after a restart, logs show `could not save bot state` (`E501`) | `discord-bot1/data` is not writable by UID 1000, usually because Docker created it as root. Run `sudo chown 1000:1000 discord-bot1/data`, then `/vol` again. |
+| Upgraded from an older `compose.yml` and the volume does not survive `docker compose down` | Download the current `compose.yml`, which mounts `discord-bot1/data`. Without that mount the state lives in an anonymous Docker volume. It survives restarts and `up --force-recreate`, but `down -v` deletes it. |
 | `youtube cookies file has unreadable lines` in the logs | yt-dlp skips those lines. Each line needs 7 fields separated by **tabs**. Copy-paste through a terminal or chat often turns tabs into spaces, so copy the file itself instead (`scp`). |
 
 ### Update and uninstall
 
-- **Update:** `docker compose up -d`. With `pull_policy: always`, this pulls the newest image every time.
+- **Update:** `docker compose up -d`. With `pull_policy: always`, this pulls the newest image every time. The saved volume in `discord-bot1/data` is kept.
 - **Uninstall:** `docker compose down`, then remove the bot under **Server Settings → Integrations**, or kick it from the member list.
 
 ## Configuration
@@ -179,6 +182,7 @@ All settings come from `.env`. `.env.example` is the template.
 | `IDLE_DISCONNECT_SECONDS` | no | `300` | How long the bot stays in voice with an empty queue before leaving. `0` means never leave. |
 | `AUDIO_BITRATE_KBPS` | no | `128` | Bitrate of the Opus stream sent to Discord (16–510). Every track is re-encoded once after loudness normalisation and volume. Discord caps a voice channel at 64 kbps by default, 96–384 kbps with server boosts. |
 | `HEALTH_PORT` | no | `8080` | Port for the `GET /healthz` endpoint |
+| `STATE_FILE` | no | `/data/state.json` | Path *inside the container* where the bot keeps its persistent state (the `/vol` level). `compose.yml` mounts `discord-bot1/data` there. |
 | `YTDLP_COOKIES_FILE` | no | `/config/cookies.txt` | Path *inside the container* to the signed-in YouTube `cookies.txt`. The file itself is required, see [YouTube cookies](#youtube-cookies). |
 | `APP_ENV` | no | `production` | Environment name included in log lines |
 | `LOG_LEVEL` | no | `info` | Lowest severity written: `debug`, `info`, `warn` or `error`. `debug` adds voice and player state changes. |
@@ -224,6 +228,8 @@ The file is mounted read-only and is read once at startup. The bot works on a pr
   | `menu interaction denied` | info | A queue-manager button was clicked by someone without any DJ role |
   | `now playing` | info | A track started. Includes the current `volume`. |
   | `volume changed` | info | A DJ used `/vol`. Includes `from`, `to` and `userId`. |
+  | `bot state loaded` / `no saved bot state, using defaults` | info | Startup read of `STATE_FILE`, with the restored `volume` |
+  | `could not save bot state` / `ignoring invalid bot state` / `could not read bot state` | warn | `E501`. The bot keeps running with the volume in memory or the default. |
   | `youtube cookies loaded` / `invalid youtube cookies` | info / error | The cookie file passed the startup check, or did not (exit code 78) |
   | `yt-dlp warning` | warn | A `WARNING:` line from yt-dlp, for example rotated cookies or skipped cookie lines |
   | `track resolve failed` / `audio source failed` | warn | yt-dlp could not resolve or stream a video. Includes `errorCode`, `errorClass` and the raw reason. |
@@ -239,7 +245,7 @@ Discord users only ever see a code. Every log line for a failure carries the sam
 docker compose logs --no-log-prefix discord-bot1 | jq 'select(.errorCode == "E201")'
 ```
 
-The full catalog lives in `src/errors.ts` and in [TECHNICAL.md](TECHNICAL.md#error-codes). Codes `E2xx` come from yt-dlp and YouTube, `E3xx` from audio playback, `E4xx` from the voice connection, and `E1xx` are bugs in the bot.
+The full catalog lives in `src/errors.ts` and in [TECHNICAL.md](TECHNICAL.md#error-codes). Codes `E2xx` come from yt-dlp and YouTube, `E3xx` from audio playback, `E4xx` from the voice connection, `E5xx` from the bot's state file, and `E1xx` are bugs in the bot.
 
 ## Images
 

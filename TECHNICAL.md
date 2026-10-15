@@ -38,7 +38,8 @@ src/
   youtube.ts    URL allowlist → canonical https://www.youtube.com/watch?v=<id>
   ytdlp.ts      yt-dlp metadata resolution + audio source (yt-dlp → ffmpeg loudnorm → 48 kHz s16le PCM)
   voice.ts      pure voice-channel choice for /add across the VOICE_CHANNEL_ID list, mention formatting
-  errors.ts     internal error-code catalog (E1xx–E4xx), yt-dlp stderr classifier, code-only user messages
+  errors.ts     internal error-code catalog (E1xx–E5xx), yt-dlp stderr classifier, code-only user messages
+  state.ts      persistent bot state (/vol level) in STATE_FILE: versioned JSON, serialised atomic writes
   queue.ts      pure TrackQueue (enqueue/remove/move/promote/shuffle)
   player.ts     MusicPlayer: voice connection, AudioPlayer, queue advancement
   menu.ts       /mn component UI (embed + select + buttons) and its collector
@@ -166,13 +167,20 @@ Nothing technical ever reaches Discord. Users see `⚠️ <one sentence>. Error 
 | `E303` | audio player emitted an error | `AudioPlayer` `error` event |
 | `E401` | could not join the voice channel | `#ensureConnection` |
 | `E402` | voice connection was lost | `VoiceConnectionStatus.Destroyed` |
+| `E501` | bot state file could not be read, parsed or written | `StateStore.load` / `/vol` save |
 
 `classifyYtDlpError` matches yt-dlp's stderr against ordered patterns (first match wins, `E299` otherwise), with a unit test per pattern. Codes are stable: never renumber one, add a new code instead.
 
 ### Runtime hardening (verified locally with OrbStack)
 
 - Capability probe: `cap_drop: [ALL]` with no `cap_add`, plus `read_only: true` and `no-new-privileges`. Under these settings, metadata resolution with Node solving the challenges under `--permission`, the yt-dlp → ffmpeg `loudnorm` → inline volume → `opusscript` pipeline, the health server and the config/login error paths all ran with **no permission errors**, so no capability is added back.
-- The only writable path is the `/tmp` tmpfs. It holds yt-dlp's cache (`XDG_CACHE_HOME=/tmp/.cache`) and the private copy of the cookies file. yt-dlp rewrites its cookie jar on exit, so it cannot use the read-only mount directly.
+- The writable paths are the `/tmp` tmpfs and `/data`. `/tmp` holds yt-dlp's cache (`XDG_CACHE_HOME=/tmp/.cache`) and the private copy of the cookies file. yt-dlp rewrites its cookie jar on exit, so it cannot use the read-only mount directly. `/data` is declared with `VOLUME` and pre-created as `1000:1000` in the image, so it is writable both as the `discord-bot1/data` bind mount and as an anonymous volume when a deployment does not mount it.
+
+### Persistent state (`state.ts`)
+
+`STATE_FILE` (default `/data/state.json`) holds `{"version": 1, "volume": <0–150>}`. It is loaded once before Discord login and passed to `MusicPlayer` as `initialVolume`. After `/vol` applies the new level, it is saved with `StateStore.save`. Saves are chained on one promise, so concurrent `/vol` calls land in order and the file always holds the last value. Each save writes `state.json.tmp` (mode 0600), `fsync`s it and `rename`s it over the file, so a crash or `docker kill` never leaves a torn file.
+
+State is never fatal. A missing file means a fresh install (info). An unreadable or invalid file, or a wrong `version`, falls back to the defaults with `E501` and is repaired by the next successful save. A failed save logs `E501`, and the new volume still plays until the next restart. Verified in the hardened container (read-only rootfs, `cap_drop ALL`, UID 1000): a level saved in one container is restored in a new one through the bind mount, and across `docker start` of the same container through the anonymous volume.
 
 ### YouTube cookies (`cookies.ts`)
 

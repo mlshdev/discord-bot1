@@ -33,6 +33,7 @@ export interface PlayerOptions {
   readonly maxQueueSize: number;
   readonly idleDisconnectSeconds: number;
   readonly audioBitrateKbps: number;
+  readonly initialVolume: number;
   readonly announce: (content: string) => Promise<void>;
   readonly logger: Logger;
 }
@@ -60,6 +61,15 @@ export class VolumeRangeError extends Error {
   override readonly name = "VolumeRangeError";
 }
 
+function checkedVolume(percent: number): number {
+  if (!Number.isInteger(percent) || percent < 0 || percent > MAX_VOLUME_LEVEL) {
+    throw new VolumeRangeError(
+      `Volume must be an integer from 0 to ${MAX_VOLUME_LEVEL}, got ${percent}`,
+    );
+  }
+  return percent;
+}
+
 export class MusicPlayer extends EventEmitter<PlayerEvents> {
   readonly #options: PlayerOptions;
   readonly #queue: TrackQueue;
@@ -69,7 +79,7 @@ export class MusicPlayer extends EventEmitter<PlayerEvents> {
   #current: Track | undefined;
   #source: AudioSource | undefined;
   #resource: AudioResource<Track> | undefined;
-  #volume = DEFAULT_VOLUME;
+  #volume: number;
   #advancing = false;
   #idleTimer: NodeJS.Timeout | undefined;
   #nextUid = 1;
@@ -78,6 +88,7 @@ export class MusicPlayer extends EventEmitter<PlayerEvents> {
   constructor(options: PlayerOptions) {
     super();
     this.#options = options;
+    this.#volume = checkedVolume(options.initialVolume);
     this.#queue = new TrackQueue(options.maxQueueSize);
     this.#audioPlayer = createAudioPlayer({
       behaviors: { noSubscriber: NoSubscriberBehavior.Pause },
@@ -139,12 +150,7 @@ export class MusicPlayer extends EventEmitter<PlayerEvents> {
 
   // Percent of the normalised loudness; applies to the current track at once and to all later ones.
   setVolume(percent: number): void {
-    if (!Number.isInteger(percent) || percent < 0 || percent > MAX_VOLUME_LEVEL) {
-      throw new VolumeRangeError(
-        `Volume must be an integer from 0 to ${MAX_VOLUME_LEVEL}, got ${percent}`,
-      );
-    }
-    this.#volume = percent;
+    this.#volume = checkedVolume(percent);
     this.#resource?.volume?.setVolume(percent / 100);
     this.emit("change");
   }

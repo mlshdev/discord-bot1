@@ -13,6 +13,8 @@ AGENTS.local.md
 */logs/
 !*/logs/.gitkeep
 discord-bot1/config/cookies.txt
+discord-bot1/data/*
+!discord-bot1/data/.gitkeep
 
 # Environment & secrets
 .env
