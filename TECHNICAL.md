@@ -37,6 +37,7 @@ src/
   commands.ts   slash command definitions (COMMAND_DEFINITIONS) and name → discriminated union Command
   youtube.ts    URL allowlist → canonical https://www.youtube.com/watch?v=<id>
   ytdlp.ts      yt-dlp metadata resolution + audio source (yt-dlp → ffmpeg loudnorm → 48 kHz s16le PCM)
+  voice.ts      pure voice-channel choice for /add across the VOICE_CHANNEL_ID list, mention formatting
   errors.ts     internal error-code catalog (E1xx–E4xx), yt-dlp stderr classifier, code-only user messages
   queue.ts      pure TrackQueue (enqueue/remove/move/promote/shuffle)
   player.ts     MusicPlayer: voice connection, AudioPlayer, queue advancement
@@ -52,7 +53,7 @@ test/           node:test unit tests for every pure module
 
 1. On `ClientReady`, `guild.commands.set(COMMAND_DEFINITIONS)` bulk-overwrites the guild's command set (`PUT /applications/<id>/guilds/<id>/commands`). Guild commands appear in the client instantly, unlike global ones, and only exist on `GUILD_ID`. Re-running it with the same definitions is a no-op on Discord's side. Every command is `contexts: [Guild]`, `integration_types: [GuildInstall]`. A failure (typically `50001` when the invite lacked `applications.commands`) is a startup validation failure and exits 78.
 2. `InteractionCreate` events that are not chat-input commands from the cached `GUILD_ID` guild are ignored. Component clicks are handled by the menu's own collector.
-3. `toCommand(commandName, url option)` maps the interaction to a `Command`. Outside `TEXT_CHANNEL_ID` the bot answers ephemerally and logs `command denied` with `reason: "wrong channel"`. Commands in `PRIVILEGED_COMMANDS` need `member.roles.cache.has(DJ_ROLE_ID)`. Refusals and usage errors are ephemeral, results are public. A thrown error is logged as `command failed` and answered with an ephemeral follow-up or reply.
+3. `toCommand(commandName, url option)` maps the interaction to a `Command`. Outside `TEXT_CHANNEL_ID` the bot answers ephemerally and logs `command denied` with `reason: "wrong channel"`. Commands in `PRIVILEGED_COMMANDS` need at least one of the `DJ_ROLE_ID` roles (`config.djRoleIds.some(...)`). Refusals and usage errors are ephemeral, results are public. A thrown error is logged as `command failed` and answered with an ephemeral follow-up or reply.
 4. `/add`:
    1. The URL and the queue limit are checked first and answered ephemerally. Only then does the bot call `deferReply()`, because yt-dlp regularly takes longer than the 3 s Discord allows for the first response. The result is sent with `editReply()`.
    2. `parseYouTubeUrl` checks the host against an allowlist and validates the 11-character video ID. It then rebuilds a canonical URL, so user text never reaches yt-dlp's argv, and `--` is always passed before the URL as well.
@@ -87,13 +88,14 @@ test/           node:test unit tests for every pure module
 - `open()` is synchronous: it only spawns yt-dlp and ffmpeg and pipes them together. A `#generation` counter, bumped by `disconnect()`, throws away a connection attempt that finishes after the player was reset.
 - A track that ends naturally keeps its processes for a 10 s grace period. That way a non-zero yt-dlp exit, such as a 403 partway through the stream, is still logged as `E302`.
 - If the bot cannot join voice, the track goes back to the front of the queue instead of being dropped.
+- **Voice channel per session.** `VOICE_CHANNEL_ID` and `DJ_ROLE_ID` are comma lists (`snowflakeList` in `config.ts`: trimmed, deduplicated in order, empty entries rejected, at most 25). `chooseVoiceChannel` (`voice.ts`, pure, unit-tested) picks the target for `/add`. With a session running (`player.voiceChannelId` set) it keeps that channel. Otherwise it takes the requester's channel if it is allowed, or the only allowed channel if there is exactly one. Otherwise it refuses ephemerally before deferring. `enqueue()` stores the channel only when no session exists (`??=`), and `disconnect()` clears it, which also covers the idle timeout and lost connections. Startup fetches every listed voice channel and role and fails with exit 78 on the first one that is missing. The permission audit and its `ChannelUpdate` watch cover every listed voice channel.
 - A connection that is lost for real (still `Disconnected` after 5 s, or `Destroyed`) clears the queue and logs `E402`. Nothing is posted in the channel. An intentional disconnect detaches `#connection` before calling `destroy()`, so it is not logged as lost.
 
 ### Queue manager (`menu.ts`)
 
 - `renderMenu(snapshot, state, closed)` is a pure function of the player snapshot plus per-menu state (`page`, `selectedUid`, `notice`).
 - Tracks are referenced by a per-process `uid`, never by position, so concurrent edits cannot hit the wrong track.
-- Every interaction re-checks the DJ role. Unauthorised clicks get an ephemeral reply.
+- Every interaction re-checks the DJ roles. Unauthorised clicks get an ephemeral reply.
 - `/mn` answers with `reply({ withResponse: true })` and collects components on the returned message. Each click is answered with `update()` on its own fresh interaction token.
 - The menu subscribes to `MusicPlayer`'s `change` event and re-renders through `editReply()` on the `/mn` interaction, debounced to 1 s. The collector ends after 5 minutes idle or 14 minutes in total, and then the components are removed. The cap exists because the `/mn` interaction token, which every refresh and the final close edit use, expires after 15 minutes.
 

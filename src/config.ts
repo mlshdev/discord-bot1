@@ -4,8 +4,8 @@ export interface Config {
   readonly discordToken: string;
   readonly guildId: string;
   readonly textChannelId: string;
-  readonly voiceChannelId: string;
-  readonly djRoleId: string;
+  readonly voiceChannelIds: readonly string[];
+  readonly djRoleIds: readonly string[];
   readonly maxQueueSize: number;
   readonly idleDisconnectSeconds: number;
   readonly healthPort: number;
@@ -24,6 +24,7 @@ export class ConfigError extends Error {
 type Env = Readonly<Record<string, string | undefined>>;
 
 const SNOWFLAKE = /^\d{17,20}$/;
+const MAX_LIST_ITEMS = 25;
 
 export const DEFAULT_COOKIES_FILE = "/config/cookies.txt";
 
@@ -46,6 +47,27 @@ function snowflake(env: Env, key: string): string {
     throw new ConfigError(`${key} must be a Discord snowflake ID, got "${value}"`);
   }
   return value;
+}
+
+// Comma-separated, whitespace around items ignored, duplicates collapsed in order.
+function snowflakeList(env: Env, key: string): readonly string[] {
+  const items = required(env, key)
+    .split(",")
+    .map((item) => item.trim());
+  if (items.some((item) => item === "")) {
+    throw new ConfigError(`${key} has an empty entry; separate IDs with single commas`);
+  }
+  const invalid = items.filter((item) => !SNOWFLAKE.test(item));
+  if (invalid.length > 0) {
+    throw new ConfigError(
+      `${key} must be Discord snowflake IDs separated by commas, got "${invalid.join('", "')}"`,
+    );
+  }
+  const unique = [...new Set(items)];
+  if (unique.length > MAX_LIST_ITEMS) {
+    throw new ConfigError(`${key} accepts at most ${MAX_LIST_ITEMS} IDs, got ${unique.length}`);
+  }
+  return unique;
 }
 
 function integer(env: Env, key: string, fallback: number, min: number, max: number): number {
@@ -76,8 +98,8 @@ export function loadConfig(env: Env): Config {
     discordToken: required(env, "DISCORD_TOKEN"),
     guildId: snowflake(env, "GUILD_ID"),
     textChannelId: snowflake(env, "TEXT_CHANNEL_ID"),
-    voiceChannelId: snowflake(env, "VOICE_CHANNEL_ID"),
-    djRoleId: snowflake(env, "DJ_ROLE_ID"),
+    voiceChannelIds: snowflakeList(env, "VOICE_CHANNEL_ID"),
+    djRoleIds: snowflakeList(env, "DJ_ROLE_ID"),
     maxQueueSize: integer(env, "MAX_QUEUE_SIZE", 100, 1, 1000),
     idleDisconnectSeconds: integer(env, "IDLE_DISCONNECT_SECONDS", 300, 0, 86_400),
     healthPort: integer(env, "HEALTH_PORT", 8080, 1, 65_535),

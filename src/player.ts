@@ -28,7 +28,6 @@ export const DEFAULT_VOLUME = 100;
 
 export interface PlayerOptions {
   readonly guildId: string;
-  readonly voiceChannelId: string;
   readonly adapterCreator: DiscordGatewayAdapterCreator;
   readonly ytDlp: YtDlp;
   readonly maxQueueSize: number;
@@ -66,6 +65,7 @@ export class MusicPlayer extends EventEmitter<PlayerEvents> {
   readonly #queue: TrackQueue;
   readonly #audioPlayer: AudioPlayer;
   #connection: VoiceConnection | undefined;
+  #channelId: string | undefined;
   #current: Track | undefined;
   #source: AudioSource | undefined;
   #resource: AudioResource<Track> | undefined;
@@ -102,6 +102,11 @@ export class MusicPlayer extends EventEmitter<PlayerEvents> {
     });
   }
 
+  // The voice channel of the current session, from the first /add until disconnect().
+  get voiceChannelId(): string | undefined {
+    return this.#channelId;
+  }
+
   get queueIsFull(): boolean {
     return this.#queue.isFull;
   }
@@ -115,9 +120,11 @@ export class MusicPlayer extends EventEmitter<PlayerEvents> {
     };
   }
 
-  enqueue(info: TrackInfo, requestedBy: string): EnqueueResult {
+  // `voiceChannelId` is only used when no session is active yet.
+  enqueue(info: TrackInfo, requestedBy: string, voiceChannelId: string): EnqueueResult {
     const track: Track = { ...info, uid: `t${this.#nextUid++}`, requestedBy };
     const position = this.#queue.enqueue(track);
+    this.#channelId ??= voiceChannelId;
     this.emit("change");
     if (this.#current === undefined && !this.#advancing) {
       void this.#advance();
@@ -212,6 +219,7 @@ export class MusicPlayer extends EventEmitter<PlayerEvents> {
     this.#clearIdleTimer();
     const connection = this.#connection;
     this.#connection = undefined;
+    this.#channelId = undefined;
     if (connection !== undefined && connection.state.status !== VoiceConnectionStatus.Destroyed) {
       connection.destroy();
     }
@@ -313,10 +321,14 @@ export class MusicPlayer extends EventEmitter<PlayerEvents> {
         throw new VoiceConnectError("Voice connection did not recover", { cause: error });
       }
     }
-    const { guildId, voiceChannelId, adapterCreator, logger } = this.#options;
+    const { guildId, adapterCreator, logger } = this.#options;
+    const channelId = this.#channelId;
+    if (channelId === undefined) {
+      throw new VoiceConnectError("No voice channel was chosen for this session");
+    }
     const connection = joinVoiceChannel({
       guildId,
-      channelId: voiceChannelId,
+      channelId,
       adapterCreator,
       selfDeaf: true,
     });

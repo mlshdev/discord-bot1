@@ -1,6 +1,6 @@
 # discord-bot1
 
-A Discord music bot that plays **YouTube only**, in **one** voice channel on **one** server, driven by slash commands in **one** text channel. It runs on Node.js 24 LTS. Audio is fetched with [yt-dlp](https://github.com/yt-dlp/yt-dlp), which uses that same Node.js binary, sandboxed, to solve YouTube's JavaScript challenges. The container image is rebuilt automatically whenever yt-dlp publishes a new release.
+A Discord music bot that plays **YouTube only**, in one or more voice channels you choose (one at a time) on **one** server, driven by slash commands in **one** text channel. It runs on Node.js 24 LTS. Audio is fetched with [yt-dlp](https://github.com/yt-dlp/yt-dlp), which uses that same Node.js binary, sandboxed, to solve YouTube's JavaScript challenges. The container image is rebuilt automatically whenever yt-dlp publishes a new release.
 
 Only audio is ever downloaded, never video. Every track is loudness-normalised (EBU R128, −14 LUFS, the same reference YouTube uses), so quiet and loud videos play at the same level, and DJs can turn the volume up or down with `/vol`.
 
@@ -12,11 +12,11 @@ Commands only run in the text channel set by `TEXT_CHANNEL_ID`. Used anywhere el
 
 | Command | Who | What it does |
 |---|---|---|
-| `/add url:<youtube-url>` | everyone | Adds a YouTube video to the queue. If nothing is playing, playback starts in `VOICE_CHANNEL_ID`. |
-| `/ff` | `DJ_ROLE_ID` only | Force-skips the current song. |
-| `/mn` | `DJ_ROLE_ID` only | Opens the interactive queue manager. |
-| `/won` | `DJ_ROLE_ID` only | Stops playback, clears the queue and leaves the voice channel. |
-| `/vol [level:<0-150>]` | `DJ_ROLE_ID` only | Sets the volume in percent of the normalised loudness, for the current and all later tracks. Without `level` it privately shows the current volume. Starts at `100` after every restart. |
+| `/add url:<youtube-url>` | everyone | Adds a YouTube video to the queue. If the bot is not in voice yet, it joins the `VOICE_CHANNEL_ID` channel you are in. With only one channel configured you don't have to be in voice. With several, you must be in one of them. Once playing, the bot stays in that channel until `/won` or the idle timeout, and every `/add` goes into the same queue. |
+| `/ff` | any `DJ_ROLE_ID` role | Force-skips the current song. |
+| `/mn` | any `DJ_ROLE_ID` role | Opens the interactive queue manager. |
+| `/won` | any `DJ_ROLE_ID` role | Stops playback, clears the queue and leaves the voice channel. |
+| `/vol [level:<0-150>]` | any `DJ_ROLE_ID` role | Sets the volume in percent of the normalised loudness, for the current and all later tracks. Without `level` it privately shows the current volume. Starts at `100` after every restart. |
 
 Server admins can further limit who sees each command, and in which channels, under **Server Settings → Integrations → *bot name* → Command Permissions**. The bot's own channel and DJ-role checks still apply on top.
 
@@ -37,7 +37,7 @@ The menu shows what is playing now and the queue, ten tracks per page. It update
 - **Force skip**, **Pause/Resume**, **Shuffle** and **Clear queue** act on the whole queue.
 - **Prev/Next** page through long queues. **Close** ends the menu.
 
-Only members with the DJ role can use the buttons. Anyone else gets a private "not allowed" reply. The menu stops responding after five minutes without use, and after 14 minutes at most, because Discord only lets the bot edit a slash-command reply for 15 minutes. Run `/mn` again to get a fresh one.
+Only members with one of the DJ roles can use the buttons. Anyone else gets a private "not allowed" reply. The menu stops responding after five minutes without use, and after 14 minutes at most, because Discord only lets the bot edit a slash-command reply for 15 minutes. Run `/mn` again to get a fresh one.
 
 ## Installation
 
@@ -111,10 +111,10 @@ If the bot was added earlier with the old link (`scope=bot`, `permissions=323072
    |---|---|---|
    | The server icon | Copy Server ID | `GUILD_ID` |
    | The command text channel | Copy Channel ID | `TEXT_CHANNEL_ID` |
-   | The voice channel | Copy Channel ID | `VOICE_CHANNEL_ID` |
-   | The DJ role, in **Server Settings → Roles** | Copy Role ID | `DJ_ROLE_ID` |
+   | The voice channel(s) | Copy Channel ID | `VOICE_CHANNEL_ID` |
+   | The DJ role(s), in **Server Settings → Roles** | Copy Role ID | `DJ_ROLE_ID` |
 
-   Each ID is a 17–20 digit number. If you use the voice channel's own chat for commands, `TEXT_CHANNEL_ID` and `VOICE_CHANNEL_ID` are the same.
+   Each ID is a 17–20 digit number. `VOICE_CHANNEL_ID` and `DJ_ROLE_ID` take several IDs separated by commas, for example `DJ_ROLE_ID=111111111111111111,222222222222222222`. If you use the voice channel's own chat for commands, `TEXT_CHANNEL_ID` and `VOICE_CHANNEL_ID` are the same.
 
 ### Step 5: Deploy on the host
 
@@ -147,7 +147,8 @@ The image `ghcr.io/mlshdev/discord-bot1:latest` is public, so you don't need to 
 | Symptom | Cause and fix |
 |---|---|
 | Container exits with code `78`, log says `invalid youtube cookies` | `discord-bot1/config/cookies.txt` is missing, unreadable, malformed, signed out or expired. The `error.message` names the exact problem. Fix it as described in [YouTube cookies](#youtube-cookies). |
-| Container exits with code `78`, log says `invalid configuration` | A required variable is missing, or an ID is not a 17–20 digit number. Fix `.env`. |
+| Container exits with code `78`, log says `invalid configuration` | A required variable is missing, an ID is not a 17–20 digit number, or a comma list has an empty entry (`a,,b` or a trailing comma). The message names the variable. Fix `.env`. |
+| `/add` answers "Join one of … first" | Several voice channels are configured and you are in none of them. Join one, then `/add` again. |
 | Container exits with code `78`, log says `startup validation failed` | An ID points at the wrong place, or the bot is not on that server or cannot see a channel. Check step 3 and step 4. If the error has `code` `50001` and a route ending in `/commands`, the bot was invited without the `applications.commands` scope: authorise the link from step 2 again. |
 | Container exits with code `1`, log says `discord login failed` | The token is wrong or was reset (step 1.3). |
 | Typing `/` does not list the bot's commands | Restart the bot and check for `slash commands registered` in the logs. In Discord, press Ctrl+R (Cmd+R on macOS) to reload. Also check **Server Settings → Integrations** in case an admin hid the commands. |
@@ -172,8 +173,8 @@ All settings come from `.env`. `.env.example` is the template.
 | `DISCORD_TOKEN` | yes | — | Bot token |
 | `GUILD_ID` | yes | — | The only server the bot responds in |
 | `TEXT_CHANNEL_ID` | yes | — | The only channel commands run in, and where "now playing" is announced. A voice channel's built-in chat also works. |
-| `VOICE_CHANNEL_ID` | yes | — | The voice channel the bot plays in |
-| `DJ_ROLE_ID` | yes | — | Role allowed to use `/ff`, `/mn`, `/won` and `/vol` |
+| `VOICE_CHANNEL_ID` | yes | — | One or more voice channels the bot may play in, comma-separated (at most 25). With several, the bot joins the one the person using `/add` is in. |
+| `DJ_ROLE_ID` | yes | — | One or more roles allowed to use `/ff`, `/mn`, `/won` and `/vol`, comma-separated (at most 25). Any one of them is enough. |
 | `MAX_QUEUE_SIZE` | no | `100` | Maximum number of queued tracks (1–1000) |
 | `IDLE_DISCONNECT_SECONDS` | no | `300` | How long the bot stays in voice with an empty queue before leaving. `0` means never leave. |
 | `AUDIO_BITRATE_KBPS` | no | `128` | Bitrate of the Opus stream sent to Discord (16–510). Every track is re-encoded once after loudness normalisation and volume. Discord caps a voice channel at 64 kbps by default, 96–384 kbps with server boosts. |
@@ -218,9 +219,9 @@ The file is mounted read-only and is read once at startup. The bot works on a pr
   | `slash commands registered` | info | `/add`, `/ff`, `/mn`, `/won` and `/vol` were registered on the server |
   | `bot ready` | info | Logged in and the channels were validated |
   | `discord permissions ok` / `missing discord permissions` | info / warn | Permission check of the command and voice channels. It runs at startup and again whenever a role or one of the two channels changes, and is logged only when the result changes. |
-  | `command received` / `command denied` | info | A command was accepted, or refused (`reason` is `missing DJ role` or `wrong channel`) |
+  | `command received` / `command denied` | info | A command was accepted, or refused (`reason` is `missing DJ role`, `wrong channel` or `not in an allowed voice channel`) |
   | `command failed` | error | A command threw (`E100`). The user gets a private reply with only the code. Includes `command` and `interactionId`. |
-  | `menu interaction denied` | info | A queue-manager button was clicked by someone without the DJ role |
+  | `menu interaction denied` | info | A queue-manager button was clicked by someone without any DJ role |
   | `now playing` | info | A track started. Includes the current `volume`. |
   | `volume changed` | info | A DJ used `/vol`. Includes `from`, `to` and `userId`. |
   | `youtube cookies loaded` / `invalid youtube cookies` | info / error | The cookie file passed the startup check, or did not (exit code 78) |

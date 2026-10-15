@@ -37,6 +37,7 @@ import {
 } from "./permissions.ts";
 import { MusicPlayer } from "./player.ts";
 import { QueueFullError } from "./queue.ts";
+import { chooseVoiceChannel, mentionList } from "./voice.ts";
 import { parseYouTubeUrl } from "./youtube.ts";
 import { TrackResolveError, YtDlp } from "./ytdlp.ts";
 
@@ -52,7 +53,7 @@ interface Runtime {
 type CommandInteraction = ChatInputCommandInteraction<"cached">;
 
 function hasDjRole(member: GuildMember | null, config: Config): boolean {
-  return member?.roles.cache.has(config.djRoleId) ?? false;
+  return config.djRoleIds.some((roleId) => member?.roles.cache.has(roleId) ?? false);
 }
 
 async function replyPrivately(interaction: CommandInteraction, content: string): Promise<void> {
@@ -86,6 +87,26 @@ async function handleAdd(
     await replyPrivately(interaction, `The queue is full (${runtime.config.maxQueueSize} tracks).`);
     return;
   }
+  const { voiceChannelIds } = runtime.config;
+  const memberChannelId = interaction.member.voice.channelId;
+  const target = chooseVoiceChannel(
+    voiceChannelIds,
+    runtime.player.voiceChannelId,
+    memberChannelId,
+  );
+  if (!target.ok) {
+    runtime.logger.info("command denied", {
+      command: "add",
+      userId: interaction.user.id,
+      reason: target.reason,
+      memberChannelId,
+    });
+    await replyPrivately(
+      interaction,
+      `🔇 Join one of ${mentionList(voiceChannelIds, "channel")} first, then use \`/add\` again.`,
+    );
+    return;
+  }
   // yt-dlp usually needs longer than the 3 seconds Discord allows before the first response.
   await interaction.deferReply();
   let info: Awaited<ReturnType<YtDlp["resolve"]>>;
@@ -98,7 +119,7 @@ async function handleAdd(
     return;
   }
   try {
-    const result = runtime.player.enqueue(info, interaction.user.id);
+    const result = runtime.player.enqueue(info, interaction.user.id, target.channelId);
     await interaction.editReply(
       result.kind === "started"
         ? `➕ Added ${describeTrack(result.track)}, starting playback.`
@@ -191,9 +212,15 @@ async function handleCommand(interaction: CommandInteraction, runtime: Runtime):
       command: command.kind,
       userId: interaction.user.id,
       reason: "missing DJ role",
-      djRoleId: config.djRoleId,
+      djRoleIds: config.djRoleIds,
     });
-    await replyPrivately(interaction, `⛔ This command requires the <@&${config.djRoleId}> role.`);
+    const roles = mentionList(config.djRoleIds, "role");
+    await replyPrivately(
+      interaction,
+      config.djRoleIds.length === 1
+        ? `⛔ This command requires the ${roles} role.`
+        : `⛔ This command requires one of these roles: ${roles}.`,
+    );
     return;
   }
   logger.info("command received", { command: command.kind, userId: interaction.user.id });
@@ -203,7 +230,7 @@ async function handleCommand(interaction: CommandInteraction, runtime: Runtime):
 async function auditChannels(
   guild: Guild,
   textChannel: GuildTextBasedChannel,
-  voiceChannel: VoiceBasedChannel,
+  voiceChannels: readonly VoiceBasedChannel[],
 ): Promise<ChannelAudit[]> {
   const me = guild.members.me ?? (await guild.members.fetchMe());
   return [
@@ -213,12 +240,14 @@ async function auditChannels(
       channelName: textChannel.name,
       missing: missingPermissions(textChannel.permissionsFor(me), TEXT_CHANNEL_PERMISSIONS),
     },
-    {
-      role: "voice",
-      channelId: voiceChannel.id,
-      channelName: voiceChannel.name,
-      missing: missingPermissions(voiceChannel.permissionsFor(me), VOICE_CHANNEL_PERMISSIONS),
-    },
+    ...voiceChannels.map(
+      (voiceChannel): ChannelAudit => ({
+        role: "voice",
+        channelId: voiceChannel.id,
+        channelName: voiceChannel.name,
+        missing: missingPermissions(voiceChannel.permissionsFor(me), VOICE_CHANNEL_PERMISSIONS),
+      }),
+    ),
   ];
 }
 
@@ -308,12 +337,26 @@ async function main(): Promise<void> {
     try {
       const guild = await ready.guilds.fetch(config.guildId);
       const textChannel = await guild.channels.fetch(config.textChannelId);
-      const voiceChannel = await guild.channels.fetch(config.voiceChannelId);
       if (textChannel === null || !textChannel.isTextBased()) {
         throw new ConfigError("TEXT_CHANNEL_ID does not point to a text channel in the guild");
       }
-      if (voiceChannel === null || !voiceChannel.isVoiceBased()) {
-        throw new ConfigError("VOICE_CHANNEL_ID does not point to a voice channel in the guild");
+      const voiceChannels: VoiceBasedChannel[] = [];
+      for (const channelId of config.voiceChannelIds) {
+        const channel = await guild.channels.fetch(channelId);
+        if (channel === null || !channel.isVoiceBased()) {
+          throw new ConfigError(
+            `VOICE_CHANNEL_ID entry ${channelId} does not point to a voice channel in the guild`,
+          );
+        }
+        voiceChannels.push(channel);
+      }
+      const djRoles: Role[] = [];
+      for (const roleId of config.djRoleIds) {
+        const role = await guild.roles.fetch(roleId);
+        if (role === null) {
+          throw new ConfigError(`DJ_ROLE_ID entry ${roleId} is not a role in the guild`);
+        }
+        djRoles.push(role);
       }
       const announceChannel: GuildTextBasedChannel = textChannel;
       // Guild commands replace the whole set in one call and show up in the client instantly.
@@ -323,7 +366,6 @@ async function main(): Promise<void> {
       });
       const player = new MusicPlayer({
         guildId: guild.id,
-        voiceChannelId: voiceChannel.id,
         adapterCreator: guild.voiceAdapterCreator,
         ytDlp,
         maxQueueSize: config.maxQueueSize,
@@ -339,14 +381,15 @@ async function main(): Promise<void> {
         user: ready.user.tag,
         guild: guild.name,
         textChannel: textChannel.name,
-        voiceChannel: voiceChannel.name,
+        voiceChannels: voiceChannels.map((channel) => channel.name),
+        djRoles: djRoles.map((role) => role.name),
       });
 
       // Re-audited whenever a role or one of the two channels changes; logged only on a change.
       let lastAudit = "";
       const reaudit = async (): Promise<void> => {
         try {
-          const audits = await auditChannels(guild, announceChannel, voiceChannel);
+          const audits = await auditChannels(guild, announceChannel, voiceChannels);
           const key = auditKey(audits);
           if (key !== lastAudit) {
             lastAudit = key;
@@ -357,7 +400,7 @@ async function main(): Promise<void> {
         }
       };
       await reaudit();
-      const watchedChannels = new Set([textChannel.id, voiceChannel.id]);
+      const watchedChannels = new Set([textChannel.id, ...config.voiceChannelIds]);
       client.on(Events.ChannelUpdate, (_old, updated) => {
         if (watchedChannels.has(updated.id)) {
           void reaudit();
