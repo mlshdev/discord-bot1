@@ -7,7 +7,7 @@ RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund
 
 FROM docker.io/library/debian:trixie-slim AS ytdlp
 # Bumped automatically by .github/workflows/ytdlp-release.yml on every upstream release.
-ARG YT_DLP_VERSION=2026.08.19
+ARG YT_DLP_VERSION=2026.10.21
 ARG TARGETARCH
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates curl unzip \
@@ -30,7 +30,7 @@ RUN set -eu; \
     test "$(/opt/yt-dlp/yt-dlp --version)" = "${YT_DLP_VERSION}"
 
 FROM docker.io/library/node:24-trixie-slim AS runtime
-ARG YT_DLP_VERSION=2026.08.19
+ARG YT_DLP_VERSION=2026.10.21
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates ffmpeg \
  && rm -rf /var/lib/apt/lists/*
