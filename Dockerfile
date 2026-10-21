@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 
-FROM docker.io/library/node:24-trixie-slim AS deps
+FROM docker.io/library/node:25-trixie-slim AS deps
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund
@@ -29,7 +29,7 @@ RUN set -eu; \
     chmod -R a+rX,go-w /opt/yt-dlp; \
     test "$(/opt/yt-dlp/yt-dlp --version)" = "${YT_DLP_VERSION}"
 
-FROM docker.io/library/node:24-trixie-slim AS runtime
+FROM docker.io/library/node:25-trixie-slim AS runtime
 ARG YT_DLP_VERSION=2026.10.21
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates ffmpeg \
