@@ -100,7 +100,8 @@ export function loadConfig(env: Env): Config {
     discordToken: required(env, "DISCORD_TOKEN"),
     guildId: snowflake(env, "GUILD_ID"),
     textChannelId: snowflake(env, "TEXT_CHANNEL_ID"),
-    voiceChannelIds: snowflakeList(env, "VOICE_CHANNEL_ID"),
+    voiceChannelIds:
+      optional(env, "VOICE_CHANNEL_ID") === undefined ? [] : snowflakeList(env, "VOICE_CHANNEL_ID"),
     djRoleIds: snowflakeList(env, "DJ_ROLE_ID"),
     maxQueueSize: integer(env, "MAX_QUEUE_SIZE", 100, 1, 1000),
     idleDisconnectSeconds: integer(env, "IDLE_DISCONNECT_SECONDS", 300, 0, 86_400),

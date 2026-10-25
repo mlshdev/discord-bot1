@@ -1,6 +1,9 @@
 export type VoiceChoice =
   | { readonly ok: true; readonly channelId: string }
-  | { readonly ok: false; readonly reason: "not in an allowed voice channel" };
+  | {
+      readonly ok: false;
+      readonly reason: "not in a voice channel" | "not in an allowed voice channel";
+    };
 
 // While the bot is in a channel it stays there; otherwise it follows the requester. With a single
 // allowed channel the requester does not have to be in voice at all.
@@ -11,6 +14,11 @@ export function chooseVoiceChannel(
 ): VoiceChoice {
   if (botChannelId !== undefined) {
     return { ok: true, channelId: botChannelId };
+  }
+  if (allowed.length === 0) {
+    return memberChannelId === null
+      ? { ok: false, reason: "not in a voice channel" }
+      : { ok: true, channelId: memberChannelId };
   }
   if (memberChannelId !== null && allowed.includes(memberChannelId)) {
     return { ok: true, channelId: memberChannelId };

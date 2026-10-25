@@ -17,6 +17,17 @@ function env(overrides: Record<string, string>): Record<string, string> {
 }
 
 describe("loadConfig ID lists", () => {
+  it("accepts omitted or blank voice channel IDs without restricting voice", () => {
+    const config = loadConfig({
+      DISCORD_TOKEN: "token",
+      GUILD_ID: "100000000000000000",
+      TEXT_CHANNEL_ID: "200000000000000000",
+      DJ_ROLE_ID: B,
+    });
+    assert.deepEqual(config.voiceChannelIds, []);
+    assert.deepEqual(loadConfig(env({ VOICE_CHANNEL_ID: "  " })).voiceChannelIds, []);
+  });
+
   it("keeps a single ID working", () => {
     const config = loadConfig(env({}));
     assert.deepEqual(config.voiceChannelIds, [A]);
@@ -39,7 +50,7 @@ describe("loadConfig ID lists", () => {
       () => loadConfig(env({ VOICE_CHANNEL_ID: `${A},general` })),
       (error: unknown) => error instanceof ConfigError && /"general"/.test(error.message),
     );
-    assert.throws(() => loadConfig(env({ VOICE_CHANNEL_ID: " " })), /is required/);
+    assert.throws(() => loadConfig(env({ VOICE_CHANNEL_ID: `${A},` })), /empty entry/);
   });
 
   it("caps the list length", () => {
