@@ -7,6 +7,18 @@ const B = "222222222222222222";
 const OTHER = "333333333333333333";
 
 describe("chooseVoiceChannel", () => {
+  it("follows the requester in any voice channel when no IDs are configured", () => {
+    assert.deepEqual(chooseVoiceChannel([], undefined, OTHER), { ok: true, channelId: OTHER });
+    assert.deepEqual(chooseVoiceChannel([], B, OTHER), { ok: true, channelId: B });
+  });
+
+  it("requires the requester to join voice when no IDs are configured", () => {
+    assert.deepEqual(chooseVoiceChannel([], undefined, null), {
+      ok: false,
+      reason: "not in a voice channel",
+    });
+  });
+
   it("stays in the channel of the running session", () => {
     assert.deepEqual(chooseVoiceChannel([A, B], B, A), { ok: true, channelId: B });
     assert.deepEqual(chooseVoiceChannel([A, B], B, null), { ok: true, channelId: B });

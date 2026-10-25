@@ -105,7 +105,9 @@ async function handleAdd(
     });
     await replyPrivately(
       interaction,
-      `🔇 Join one of ${mentionList(voiceChannelIds, "channel")} first, then use \`/add\` again.`,
+      target.reason === "not in a voice channel"
+        ? "🔇 Join a voice channel first, then use `/add` again."
+        : `🔇 Join one of ${mentionList(voiceChannelIds, "channel")} first, then use \`/add\` again.`,
     );
     return;
   }
