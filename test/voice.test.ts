@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { chooseVoiceChannel, mentionList } from "../src/voice.ts";
+import { chooseVoiceChannel, mentionList, resolveVoiceChannels } from "../src/voice.ts";
 
 const A = "111111111111111111";
 const B = "222222222222222222";
@@ -43,5 +43,73 @@ describe("mentionList", () => {
   it("formats channel and role mentions", () => {
     assert.equal(mentionList([A, B], "channel"), `<#${A}>, <#${B}>`);
     assert.equal(mentionList([A], "role"), `<@&${A}>`);
+  });
+});
+
+describe("resolveVoiceChannels", () => {
+  type Channel = { id: string; kind: "voice" | "text" };
+  type VoiceChannel = Channel & { kind: "voice" };
+  const isVoice = (channel: Channel): channel is VoiceChannel => channel.kind === "voice";
+
+  it("skips missing, inaccessible and non-voice entries but keeps valid voice channels", async () => {
+    const missing = "444444444444444444";
+    const inaccessible = "555555555555555555";
+    const notVoice = "666666666666666666";
+    const forbidden = "777777777777777777";
+    const skipped: string[] = [];
+    const channels = await resolveVoiceChannels(
+      [A, missing, inaccessible, notVoice, forbidden, B],
+      async (id): Promise<Channel | null> => {
+        if (id === missing) throw Object.assign(new Error("Unknown Channel"), { code: 10003 });
+        if (id === inaccessible) throw Object.assign(new Error("Missing Access"), { code: 50001 });
+        if (id === forbidden)
+          throw Object.assign(new Error("Missing Permissions"), { code: 50013 });
+        if (id === notVoice) return { id, kind: "text" };
+        return { id, kind: "voice" };
+      },
+      isVoice,
+      (id) => skipped.push(id),
+    );
+    assert.deepEqual(channels, [
+      { id: A, kind: "voice" },
+      { id: B, kind: "voice" },
+    ]);
+    assert.deepEqual(skipped, [missing, inaccessible, notVoice, forbidden]);
+  });
+
+  it("falls back to unrestricted voice when every configured channel is invalid", async () => {
+    const channels = await resolveVoiceChannels<Channel, VoiceChannel>(
+      [A],
+      async (): Promise<Channel | null> => null,
+      isVoice,
+      () => {},
+    );
+    assert.deepEqual(
+      chooseVoiceChannel(
+        channels.map((channel) => channel.id),
+        undefined,
+        B,
+      ),
+      {
+        ok: true,
+        channelId: B,
+      },
+    );
+    assert.deepEqual(channels, []);
+  });
+
+  it("does not treat transient failures as invalid channels", async () => {
+    const failure = { code: 503 };
+    await assert.rejects(
+      resolveVoiceChannels(
+        [A],
+        async (): Promise<Channel | null> => {
+          throw failure;
+        },
+        isVoice,
+        () => assert.fail("unexpected skip"),
+      ),
+      (error: unknown) => error === failure,
+    );
   });
 });

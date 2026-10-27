@@ -42,15 +42,25 @@ describe("loadConfig ID lists", () => {
     assert.deepEqual(config.djRoleIds, [A, B]);
   });
 
+  it("skips malformed voice entries without rejecting the other channels", () => {
+    const config = loadConfig(env({ VOICE_CHANNEL_ID: `${A},,not-a-channel,${B},${A},` }));
+    assert.deepEqual(config.voiceChannelIds, [A, B]);
+    assert.deepEqual(config.ignoredVoiceChannelIds, ["", "not-a-channel"]);
+  });
+
+  it("treats an entirely invalid optional voice list as unrestricted", () => {
+    const config = loadConfig(env({ VOICE_CHANNEL_ID: "not-a-channel" }));
+    assert.deepEqual(config.voiceChannelIds, []);
+    assert.deepEqual(config.ignoredVoiceChannelIds, ["not-a-channel"]);
+  });
+
   it("rejects empty entries and non-snowflakes", () => {
-    assert.throws(() => loadConfig(env({ VOICE_CHANNEL_ID: `${A},,${B}` })), /empty entry/);
     assert.throws(() => loadConfig(env({ DJ_ROLE_ID: `${A},` })), /empty entry/);
     assert.throws(() => loadConfig(env({ DJ_ROLE_ID: `${A};${B}` })), /"111111111111111111;222/);
     assert.throws(
-      () => loadConfig(env({ VOICE_CHANNEL_ID: `${A},general` })),
+      () => loadConfig(env({ DJ_ROLE_ID: `${A},general` })),
       (error: unknown) => error instanceof ConfigError && /"general"/.test(error.message),
     );
-    assert.throws(() => loadConfig(env({ VOICE_CHANNEL_ID: `${A},` })), /empty entry/);
   });
 
   it("caps the list length", () => {

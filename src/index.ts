@@ -38,7 +38,7 @@ import {
 import { MusicPlayer } from "./player.ts";
 import { QueueFullError } from "./queue.ts";
 import { StateStore } from "./state.ts";
-import { chooseVoiceChannel, mentionList } from "./voice.ts";
+import { chooseVoiceChannel, mentionList, resolveVoiceChannels } from "./voice.ts";
 import { parseYouTubeUrl } from "./youtube.ts";
 import { TrackResolveError, YtDlp } from "./ytdlp.ts";
 
@@ -302,6 +302,9 @@ async function main(): Promise<void> {
     environment: config.environment,
     level: config.logLevel,
   });
+  for (const id of config.ignoredVoiceChannelIds) {
+    logger.warn("ignoring invalid voice channel", { id, reason: "invalid ID" });
+  }
 
   let cookies: LoadedCookies;
   try {
@@ -355,16 +358,16 @@ async function main(): Promise<void> {
       if (textChannel === null || !textChannel.isTextBased()) {
         throw new ConfigError("TEXT_CHANNEL_ID does not point to a text channel in the guild");
       }
-      const voiceChannels: VoiceBasedChannel[] = [];
-      for (const channelId of config.voiceChannelIds) {
-        const channel = await guild.channels.fetch(channelId);
-        if (channel === null || !channel.isVoiceBased()) {
-          throw new ConfigError(
-            `VOICE_CHANNEL_ID entry ${channelId} does not point to a voice channel in the guild`,
-          );
-        }
-        voiceChannels.push(channel);
-      }
+      const voiceChannels = await resolveVoiceChannels(
+        config.voiceChannelIds,
+        (id) => guild.channels.fetch(id),
+        (channel): channel is VoiceBasedChannel => channel.isVoiceBased(),
+        (id, reason, error) => logger.warn("ignoring invalid voice channel", { id, reason, error }),
+      );
+      const activeConfig: Config = {
+        ...config,
+        voiceChannelIds: voiceChannels.map((channel) => channel.id),
+      };
       const djRoles: Role[] = [];
       for (const roleId of config.djRoleIds) {
         const role = await guild.roles.fetch(roleId);
@@ -392,7 +395,7 @@ async function main(): Promise<void> {
         },
         logger,
       });
-      runtime = { config, logger, ytDlp, player, state };
+      runtime = { config: activeConfig, logger, ytDlp, player, state };
       logger.info("bot ready", {
         user: ready.user.tag,
         guild: guild.name,
@@ -416,7 +419,7 @@ async function main(): Promise<void> {
         }
       };
       await reaudit();
-      const watchedChannels = new Set([textChannel.id, ...config.voiceChannelIds]);
+      const watchedChannels = new Set([textChannel.id, ...activeConfig.voiceChannelIds]);
       client.on(Events.ChannelUpdate, (_old, updated) => {
         if (watchedChannels.has(updated.id)) {
           void reaudit();

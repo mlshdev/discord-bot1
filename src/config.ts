@@ -5,6 +5,7 @@ export interface Config {
   readonly guildId: string;
   readonly textChannelId: string;
   readonly voiceChannelIds: readonly string[];
+  readonly ignoredVoiceChannelIds: readonly string[];
   readonly djRoleIds: readonly string[];
   readonly maxQueueSize: number;
   readonly idleDisconnectSeconds: number;
@@ -72,6 +73,22 @@ function snowflakeList(env: Env, key: string): readonly string[] {
   return unique;
 }
 
+function optionalVoiceChannelList(env: Env): {
+  readonly ids: readonly string[];
+  readonly ignored: readonly string[];
+} {
+  const value = optional(env, "VOICE_CHANNEL_ID");
+  if (value === undefined) return { ids: [], ignored: [] };
+  const entries = [...new Set(value.split(",").map((entry) => entry.trim()))];
+  const ids = entries.filter((entry) => SNOWFLAKE.test(entry));
+  if (ids.length > MAX_LIST_ITEMS) {
+    throw new ConfigError(
+      `VOICE_CHANNEL_ID accepts at most ${MAX_LIST_ITEMS} IDs, got ${ids.length}`,
+    );
+  }
+  return { ids, ignored: entries.filter((entry) => !SNOWFLAKE.test(entry)) };
+}
+
 function integer(env: Env, key: string, fallback: number, min: number, max: number): number {
   const raw = optional(env, key);
   if (raw === undefined) {
@@ -96,12 +113,13 @@ function logLevel(env: Env): LogLevel {
 }
 
 export function loadConfig(env: Env): Config {
+  const voiceChannels = optionalVoiceChannelList(env);
   return {
     discordToken: required(env, "DISCORD_TOKEN"),
     guildId: snowflake(env, "GUILD_ID"),
     textChannelId: snowflake(env, "TEXT_CHANNEL_ID"),
-    voiceChannelIds:
-      optional(env, "VOICE_CHANNEL_ID") === undefined ? [] : snowflakeList(env, "VOICE_CHANNEL_ID"),
+    voiceChannelIds: voiceChannels.ids,
+    ignoredVoiceChannelIds: voiceChannels.ignored,
     djRoleIds: snowflakeList(env, "DJ_ROLE_ID"),
     maxQueueSize: integer(env, "MAX_QUEUE_SIZE", 100, 1, 1000),
     idleDisconnectSeconds: integer(env, "IDLE_DISCONNECT_SECONDS", 300, 0, 86_400),

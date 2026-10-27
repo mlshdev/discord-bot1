@@ -148,9 +148,10 @@ The image `ghcr.io/mlshdev/discord-bot1:latest` is public, so you don't need to 
 | Symptom | Cause and fix |
 |---|---|
 | Container exits with code `78`, log says `invalid youtube cookies` | `cookies.txt` next to `compose.yml` is missing (Docker then creates a directory with that name: `sudo rm -r cookies.txt` and put the file there), unreadable, malformed, signed out or expired. The `error.message` names the exact problem. Fix it as described in [YouTube cookies](#youtube-cookies). |
-| Container exits with code `78`, log says `invalid configuration` | A required variable is missing, an ID is not a 17–20 digit number, or a comma list has an empty entry (`a,,b` or a trailing comma). The message names the variable. Fix `.env`. |
-| `/add` asks you to join voice | Without `VOICE_CHANNEL_ID`, join any voice channel first. With several configured IDs, join one of those channels. Then use `/add` again. |
-| Container exits with code `78`, log says `startup validation failed` | An ID points at the wrong place, or the bot is not on that server or cannot see a channel. Check step 3 and step 4. If the error has `code` `50001` and a route ending in `/commands`, the bot was invited without the `applications.commands` scope: authorise the link from step 2 again. |
+| Container exits with code `78`, log says `invalid configuration` | A required variable is missing, a required ID is not a 17–20 digit number, or `DJ_ROLE_ID` has an empty entry (`a,,b` or a trailing comma). The message names the variable. Fix `.env`. |
+| Logs say `ignoring invalid voice channel` | A `VOICE_CHANNEL_ID` entry is malformed, missing, inaccessible or not a voice channel. The bot continues with usable entries; correct the ID or channel access and recreate the container to include it. If none are usable, `/add` follows the requester into their voice channel. |
+| `/add` asks you to join voice | Without usable `VOICE_CHANNEL_ID` entries, join any voice channel first. With several usable IDs, join one of those channels. Then use `/add` again. |
+| Container exits with code `78`, log says `startup validation failed` | A required text channel or DJ role is invalid, or the bot is not on that server. Check step 3 and step 4. If the error has `code` `50001` and a route ending in `/commands`, the bot was invited without the `applications.commands` scope: authorise the link from step 2 again. |
 | Container exits with code `1`, log says `discord login failed` | The token is wrong or was reset (step 1.3). |
 | Typing `/` does not list the bot's commands | Restart the bot and check for `slash commands registered` in the logs. In Discord, press Ctrl+R (Cmd+R on macOS) to reload. Also check **Server Settings → Integrations** in case an admin hid the commands. |
 | The bot answers "Music commands only work in #…" | Commands only run in `TEXT_CHANNEL_ID`. |
@@ -176,7 +177,7 @@ All settings come from `.env`. `.env.example` is the template.
 | `DISCORD_TOKEN` | yes | — | Bot token |
 | `GUILD_ID` | yes | — | The only server the bot responds in |
 | `TEXT_CHANNEL_ID` | yes | — | The only channel commands run in, and where "now playing" is announced. A voice channel's built-in chat also works. |
-| `VOICE_CHANNEL_ID` | no | unrestricted | Optional comma-separated list of voice channels the bot may play in (at most 25). If omitted or blank, `/add` joins the requester's voice channel; the requester must be in voice. With one ID, the bot can join it even if the requester is not in voice. With several, the requester must be in one of them. |
+| `VOICE_CHANNEL_ID` | no | unrestricted | Optional comma-separated list of voice channels the bot may play in (at most 25 usable IDs). Invalid, missing, inaccessible and non-voice entries are skipped with a warning. If no usable IDs remain, `/add` joins the requester's voice channel; the requester must be in voice. With one usable ID, the bot can join it even if the requester is not in voice. With several, the requester must be in one of them. |
 | `DJ_ROLE_ID` | yes | — | One or more roles allowed to use `/ff`, `/mn`, `/won` and `/vol`, comma-separated (at most 25). Any one of them is enough. |
 | `MAX_QUEUE_SIZE` | no | `100` | Maximum number of queued tracks (1–1000) |
 | `IDLE_DISCONNECT_SECONDS` | no | `300` | How long the bot stays in voice with an empty queue before leaving. `0` means never leave. |
@@ -222,7 +223,8 @@ The file is mounted read-only and is read once at startup. The bot works on a pr
   |---|---|---|
   | `slash commands registered` | info | `/add`, `/ff`, `/mn`, `/won` and `/vol` were registered on the server |
   | `bot ready` | info | Logged in and the channels were validated |
-  | `discord permissions ok` / `missing discord permissions` | info / warn | Permission check of the command channel and configured voice channels. It runs at startup and again whenever a role or watched channel changes, and is logged only when the result changes. |
+  | `discord permissions ok` / `missing discord permissions` | info / warn | Permission check of the command channel and usable configured voice channels. It runs at startup and again whenever a role or watched channel changes, and is logged only when the result changes. |
+  | `ignoring invalid voice channel` | warn | An optional voice-channel entry was skipped. Includes its ID and reason; correct `.env` or channel access and recreate to retry it. |
   | `command received` / `command denied` | info | A command was accepted, or refused (`reason` is `missing DJ role`, `wrong channel` or `not in an allowed voice channel` or `not in a voice channel`) |
   | `command failed` | error | A command threw (`E100`). The user gets a private reply with only the code. Includes `command` and `interactionId`. |
   | `menu interaction denied` | info | A queue-manager button was clicked by someone without any DJ role |
